@@ -1,0 +1,22 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\LectureAssistant.Core\LectureAssistant.Core.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Static SCORM player files, copied verbatim into every package. Resource name = path inside the zip. -->
+    <EmbeddedResource Include="Assets\Scorm\*" LogicalName="Scorm/%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="LectureAssistant.Export.Tests" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,13 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/LectureAssistant.Core/LectureAssistant.Core.csproj" />
+    <Project Path="src/LectureAssistant.Export/LectureAssistant.Export.csproj" />
+    <Project Path="src/LectureAssistant.QuestionGeneration/LectureAssistant.QuestionGeneration.csproj" />
+    <Project Path="src/LectureAssistant.Transcription/LectureAssistant.Transcription.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/LectureAssistant.Core.Tests/LectureAssistant.Core.Tests.csproj" />
+    <Project Path="tests/LectureAssistant.Export.Tests/LectureAssistant.Export.Tests.csproj" />
+    <Project Path="tests/LectureAssistant.QuestionGeneration.Tests/LectureAssistant.QuestionGeneration.Tests.csproj" />
+  </Folder>
+</Solution>

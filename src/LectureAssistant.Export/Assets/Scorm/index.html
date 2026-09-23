@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- YouTube embeds require a referrer; some LMS pages default to no-referrer. -->
+  <meta name="referrer" content="strict-origin-when-cross-origin">
+  <title>Lecture</title>
+  <link rel="stylesheet" href="player.css">
+</head>
+<body>
+  <div id="app" class="app">
+    <div id="main" class="main">
+      <header class="header">
+        <h1 id="lecture-title" class="title">Lecture</h1>
+        <p id="status" class="status"></p>
+        <p id="notice" class="notice" hidden></p>
+      </header>
+
+      <div class="stage">
+        <div class="video-frame">
+          <div id="player"></div>
+          <div id="video-message" class="video-message" role="alert" hidden></div>
+        </div>
+      </div>
+
+      <div class="controls">
+        <div id="timeline" class="timeline" role="group" aria-label="Questions on the video timeline">
+          <div class="track" aria-hidden="true"><div id="progress" class="progress"></div></div>
+          <div id="markers" class="markers"></div>
+        </div>
+        <button id="fullscreen" class="button button-quiet" type="button" hidden>Full screen</button>
+      </div>
+    </div>
+
+    <div id="overlay" class="overlay" hidden>
+      <div id="dialog" class="dialog" role="dialog" aria-modal="true" aria-labelledby="dialog-title"></div>
+    </div>
+
+    <div id="announcer" class="visually-hidden" aria-live="polite" aria-atomic="true"></div>
+  </div>
+
+  <noscript><p class="noscript">This lecture needs JavaScript to play.</p></noscript>
+
+  <script src="lecture-data.js"></script>
+  <script src="player.js"></script>
+</body>
+</html>
