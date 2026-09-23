@@ -41,14 +41,38 @@ public static partial class QuestionPostProcessor
 
         // Stable sort keeps the model's order for equal timestamps; the earlier one then wins spacing.
         var ordered = candidates.OrderBy(q => q.Timestamp).ToList();
+        var spacing = EffectiveSpacing(segments, request);
         var spaced = new List<Question>();
         foreach (var q in ordered)
         {
-            if (spaced.Count > 0 && q.Timestamp - spaced[^1].Timestamp < request.MinimumSpacing) continue;
+            if (spaced.Count > 0 && q.Timestamp - spaced[^1].Timestamp < spacing)
+            {
+                // Too close to the previous question: move it to a later sentence end if one is near enough
+                // that the question still follows the material it's about; otherwise drop it.
+                var earliest = spaced[^1].Timestamp + spacing;
+                var slot = segments.Select(s => s.End).FirstOrDefault(end => end >= earliest);
+                if (slot == default || slot - q.Timestamp > MaxShift) continue;
+                q.Timestamp = slot;
+            }
             spaced.Add(q);
         }
 
         return SpreadTrim(spaced, request.QuestionCount);
+    }
+
+    /// <summary>How far a question may be pushed later to keep questions apart.</summary>
+    public static readonly TimeSpan MaxShift = TimeSpan.FromSeconds(60);
+
+    /// <summary>
+    /// The requested spacing, relaxed for short videos so the requested number of questions can fit
+    /// (never below 15 seconds, so students aren't interrupted constantly).
+    /// </summary>
+    internal static TimeSpan EffectiveSpacing(IReadOnlyList<Timeline.Span> segments, QuestionGenerationRequest request)
+    {
+        var usable = segments[^1].End - (segments[^1].End > LeadIn ? LeadIn : TimeSpan.Zero);
+        var fit = usable / Math.Max(1, request.QuestionCount + 1);
+        var floor = TimeSpan.FromSeconds(15);
+        return request.MinimumSpacing <= fit ? request.MinimumSpacing : fit < floor ? floor : fit;
     }
 
     internal static Question ToQuestion(QuestionDraft draft, QuestionType type)

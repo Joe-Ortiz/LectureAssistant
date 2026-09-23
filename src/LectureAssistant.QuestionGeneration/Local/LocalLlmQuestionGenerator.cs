@@ -48,7 +48,32 @@ public sealed class LocalLlmQuestionGenerator : IQuestionGenerator
         QuestionPrompt.EnsureUsable(request);
         var options = _options();
         // Inference is CPU/GPU-bound native work; keep it off the caller's (UI) thread.
-        return Task.Run(() => GenerateCoreAsync(request, options, progress, cancellationToken), cancellationToken);
+        return Task.Run(() => GenerateWithCpuFallbackAsync(request, options, progress, cancellationToken), cancellationToken);
+    }
+
+    /// <summary>
+    /// If the graphics card can't hold the model (or its driver misbehaves), run on the processor instead of
+    /// failing: slower, but instructors shouldn't have to know what "GPU layers" means.
+    /// </summary>
+    private static async Task<IReadOnlyList<Question>> GenerateWithCpuFallbackAsync(
+        QuestionGenerationRequest request,
+        LocalLlmOptions options,
+        IProgress<string>? progress,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await GenerateCoreAsync(request, options, progress, cancellationToken).ConfigureAwait(false);
+        }
+        catch (QuestionGenerationException ex) when (
+            options.GpuLayerCount > 0 &&
+            ex.Failure is QuestionGenerationFailure.ModelLoadFailed or QuestionGenerationFailure.Other &&
+            File.Exists(options.ModelPath) &&
+            !cancellationToken.IsCancellationRequested)
+        {
+            progress?.Report("The graphics card couldn't run the model, so the processor is being used instead (slower)…");
+            return await GenerateCoreAsync(request, options with { GpuLayerCount = 0 }, progress, cancellationToken).ConfigureAwait(false);
+        }
     }
 
     private static async Task<IReadOnlyList<Question>> GenerateCoreAsync(
@@ -89,7 +114,8 @@ public sealed class LocalLlmQuestionGenerator : IQuestionGenerator
             attemptedSections++;
 
             var sectionLabel = chunks.Count > 1 ? $"Section {i + 1} of {chunks.Count}: " : "";
-            progress?.Report($"{sectionLabel}writing {count} question{(count == 1 ? "" : "s")}…");
+            var writing = $"writing {count} question{(count == 1 ? "" : "s")}…";
+            progress?.Report(sectionLabel.Length > 0 ? sectionLabel + writing : char.ToUpperInvariant(writing[0]) + writing[1..]);
 
             var section = new TranscriptSection(i + 1, chunks.Count, chunks[i]);
             var prompt = BuildPrompt(weights, request, count, section);
@@ -100,7 +126,7 @@ public sealed class LocalLlmQuestionGenerator : IQuestionGenerator
             if (sectionDrafts.Count == 0)
             {
                 failedSections++;
-                progress?.Report($"{sectionLabel}the model's answer couldn't be read; skipping this section.");
+                progress?.Report($"{sectionLabel}{(sectionLabel.Length > 0 ? "t" : "T")}he model's answer couldn't be read; skipping this section.");
                 continue;
             }
             drafts.AddRange(sectionDrafts);
@@ -211,8 +237,8 @@ public sealed class LocalLlmQuestionGenerator : IQuestionGenerator
         catch (Exception ex)
         {
             var message = ex is not LoadWeightsFailedException and (RuntimeError or DllNotFoundException or TypeInitializationException)
-                ? "The local AI runtime couldn't start on this PC. Try setting GPU layers to 0 in Settings to run on the CPU only."
-                : $"The model \"{Path.GetFileName(options.ModelPath)}\" couldn't be loaded. It may be damaged, not a GGUF file, or too large for this PC's memory. Try fewer GPU layers or a smaller model.";
+                ? "The local AI runtime couldn't start on this PC."
+                : $"The model \"{Path.GetFileName(options.ModelPath)}\" couldn't be loaded. It may be damaged or too large for this PC's memory. Try the Standard model in Settings, or delete and download it again.";
             throw new QuestionGenerationException(QuestionGenerationFailure.ModelLoadFailed, message, ex);
         }
     }

@@ -2,6 +2,8 @@ using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using LectureAssistant.App.Services;
+using LectureAssistant.Core.Downloads;
+using LectureAssistant.QuestionGeneration.Local;
 using LectureAssistant.Transcription;
 
 namespace LectureAssistant.App.ViewModels;
@@ -18,73 +20,152 @@ public sealed partial class WhisperModelOption(WhisperModelInfo info, bool downl
     partial void OnIsDownloadedChanged(bool value) => OnPropertyChanged(nameof(Status));
 }
 
+public sealed partial class LocalModelOption(LocalModelInfo info, bool recommended) : ObservableObject
+{
+    public LocalModelInfo Info { get; } = info;
+    public string Title => $"{Info.DisplayName} · {Info.SizeText}";
+    public string Description => Info.Description;
+    public bool IsRecommended { get; } = recommended;
+
+    [ObservableProperty] public partial string Status { get; set; } = "";
+}
+
 public sealed partial class SettingsViewModel : ObservableObject
 {
+    private const int LocalIndex = 0, ClaudeIndex = 1;
+
     private readonly SettingsService _settings;
     private readonly SecretStore _secrets;
     private readonly WhisperModelManager _whisperModels;
     private readonly QuestionGeneratorFactory _generators;
-    private CancellationTokenSource? _download;
+    private readonly bool _initialized;
+    private CancellationTokenSource? _whisperDownload;
+
+    public ModelDownloadService Downloads { get; }
 
     public ObservableCollection<WhisperModelOption> WhisperModelOptions { get; } = [];
+    public ObservableCollection<LocalModelOption> LocalModelOptions { get; } = [];
 
     public static IReadOnlyList<string> Languages { get; } =
         ["auto", "en", "es", "fr", "de", "it", "pt", "nl", "pl", "zh", "ja", "ko", "ar", "hi", "ru", "uk", "tr", "vi"];
 
+    // Captions
     [ObservableProperty] public partial int SelectedWhisperIndex { get; set; }
     [ObservableProperty] public partial string TranscriptionLanguage { get; set; }
-    [ObservableProperty] public partial bool IsDownloading { get; set; }
-    [ObservableProperty] public partial double DownloadProgress { get; set; }
+    [ObservableProperty] public partial bool IsDownloadingWhisper { get; set; }
+    [ObservableProperty] public partial double WhisperDownloadProgress { get; set; }
+    [ObservableProperty] public partial string? WhisperDownloadError { get; set; }
 
+    // Question provider: 0 = on this PC, 1 = Claude
     [ObservableProperty] public partial int ProviderIndex { get; set; }
+
+    // Local model
+    [ObservableProperty] public partial int SelectedLocalModelIndex { get; set; }
+    [ObservableProperty] public partial bool SelectedModelDownloaded { get; set; }
+    [ObservableProperty] public partial string? SelectedModelWarning { get; set; }
+    [ObservableProperty] public partial bool UseCustomLocalModel { get; set; }
+    [ObservableProperty] public partial string? LocalModelPath { get; set; }
+    [ObservableProperty] public partial double LocalGpuLayers { get; set; }
+    [ObservableProperty] public partial double LocalContextSize { get; set; }
+
+    // Claude
     [ObservableProperty] public partial string ApiKey { get; set; }
     [ObservableProperty] public partial string ClaudeModel { get; set; }
     [ObservableProperty] public partial string ApiKeyStatus { get; set; } = "";
 
-    [ObservableProperty] public partial string? LocalModelPath { get; set; }
-    [ObservableProperty] public partial double LocalGpuLayers { get; set; }
-    [ObservableProperty] public partial double LocalContextSize { get; set; }
     [ObservableProperty] public partial double DefaultQuestionCount { get; set; }
 
-    public bool UseClaude => ProviderIndex == (int)QuestionProvider.Claude;
-    public bool UseLocalModel => ProviderIndex == (int)QuestionProvider.LocalModel;
-    public string LocalModelText => LocalModelPath ?? "No model selected";
+    public bool UseLocalModel => ProviderIndex == LocalIndex;
+    public bool UseClaude => ProviderIndex == ClaudeIndex;
+    public bool UseBuiltInModel => !UseCustomLocalModel;
+    public bool CanDownloadSelected => !SelectedModelDownloaded && !Downloads.IsDownloading;
+    public bool HasSelectedModelWarning => !string.IsNullOrEmpty(SelectedModelWarning);
+    public string LocalModelText => LocalModelPath ?? "No file chosen";
+    public string HardwareText { get; }
 
-    public SettingsViewModel(SettingsService settings, SecretStore secrets, WhisperModelManager whisperModels, QuestionGeneratorFactory generators)
+    private LocalModelInfo? SelectedLocalModel =>
+        SelectedLocalModelIndex >= 0 && SelectedLocalModelIndex < LocalModelOptions.Count ? LocalModelOptions[SelectedLocalModelIndex].Info : null;
+
+    public SettingsViewModel(
+        SettingsService settings,
+        SecretStore secrets,
+        WhisperModelManager whisperModels,
+        QuestionGeneratorFactory generators,
+        ModelDownloadService downloads)
     {
         _settings = settings;
         _secrets = secrets;
         _whisperModels = whisperModels;
         _generators = generators;
+        Downloads = downloads;
 
         var current = settings.Current;
         foreach (var model in WhisperModels.All) WhisperModelOptions.Add(new WhisperModelOption(model, whisperModels.IsDownloaded(model)));
         SelectedWhisperIndex = WhisperModelOptions.ToList().FindIndex(o => o.Info == WhisperModels.Find(current.WhisperModelId));
         TranscriptionLanguage = current.TranscriptionLanguage;
-        ProviderIndex = (int)current.QuestionProvider;
-        ApiKey = secrets.GetAnthropicApiKey() ?? "";
-        ClaudeModel = current.ClaudeModel;
+
+        var hardware = HardwareProbe.Profile;
+        var recommended = LocalModelCatalog.Recommend(hardware);
+        foreach (var model in LocalModelCatalog.All) LocalModelOptions.Add(new LocalModelOption(model, model == recommended));
+        var selected = LocalModelCatalog.Find(current.LocalModelId) ?? recommended;
+        SelectedLocalModelIndex = LocalModelOptions.ToList().FindIndex(o => o.Info == selected);
+        HardwareText = DescribeHardware(hardware);
+
+        ProviderIndex = current.QuestionProvider == QuestionProvider.Claude ? ClaudeIndex : LocalIndex;
+        UseCustomLocalModel = current.UseCustomLocalModel;
         LocalModelPath = current.LocalModelPath;
         LocalGpuLayers = current.LocalModelGpuLayers;
-        LocalContextSize = current.LocalModelContextSize;
+        LocalContextSize = current.LocalModelContextSize ?? 0;
+        ApiKey = secrets.GetAnthropicApiKey() ?? "";
+        ClaudeModel = current.ClaudeModel;
         DefaultQuestionCount = current.DefaultQuestionCount;
 
-        PropertyChanged += (_, e) =>
-        {
-            if (e.PropertyName is nameof(ApiKeyStatus) or nameof(IsDownloading) or nameof(DownloadProgress)) return;
-            Save();
-        };
+        RefreshLocalModelStatus();
+        downloads.PropertyChanged += OnDownloadsChanged;
+        downloads.ModelChanged += OnModelChanged;
+
+        _initialized = true;
     }
 
-    partial void OnProviderIndexChanged(int value)
+    /// <summary>Stops listening to the app-wide download service (call when the page closes).</summary>
+    public void Detach()
     {
-        OnPropertyChanged(nameof(UseClaude));
-        OnPropertyChanged(nameof(UseLocalModel));
+        Downloads.PropertyChanged -= OnDownloadsChanged;
+        Downloads.ModelChanged -= OnModelChanged;
     }
 
-    partial void OnLocalModelPathChanged(string? value) => OnPropertyChanged(nameof(LocalModelText));
+    private void OnDownloadsChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName is nameof(ModelDownloadService.IsDownloading) or nameof(ModelDownloadService.CurrentModel))
+            RefreshLocalModelStatus();
+    }
 
-    partial void OnApiKeyChanged(string value) => ApiKeyStatus = "";
+    private void OnModelChanged(LocalModelInfo model) => RefreshLocalModelStatus();
+
+    protected override void OnPropertyChanged(System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        base.OnPropertyChanged(e);
+        switch (e.PropertyName)
+        {
+            case nameof(ProviderIndex):
+                OnPropertyChanged(nameof(UseLocalModel));
+                OnPropertyChanged(nameof(UseClaude));
+                break;
+            case nameof(UseCustomLocalModel): OnPropertyChanged(nameof(UseBuiltInModel)); break;
+            case nameof(LocalModelPath): OnPropertyChanged(nameof(LocalModelText)); break;
+            case nameof(SelectedLocalModelIndex): RefreshLocalModelStatus(); break;
+            case nameof(SelectedModelDownloaded): OnPropertyChanged(nameof(CanDownloadSelected)); break;
+            case nameof(SelectedModelWarning): OnPropertyChanged(nameof(HasSelectedModelWarning)); break;
+            case nameof(ApiKey): ApiKeyStatus = ""; break;
+        }
+
+        if (_initialized && e.PropertyName is nameof(SelectedWhisperIndex) or nameof(TranscriptionLanguage) or nameof(ProviderIndex)
+            or nameof(SelectedLocalModelIndex) or nameof(UseCustomLocalModel) or nameof(LocalModelPath) or nameof(LocalGpuLayers)
+            or nameof(LocalContextSize) or nameof(ApiKey) or nameof(ClaudeModel) or nameof(DefaultQuestionCount))
+        {
+            Save();
+        }
+    }
 
     private void Save()
     {
@@ -92,14 +173,71 @@ public sealed partial class SettingsViewModel : ObservableObject
         if (SelectedWhisperIndex >= 0 && SelectedWhisperIndex < WhisperModelOptions.Count)
             s.WhisperModelId = WhisperModelOptions[SelectedWhisperIndex].Info.Id;
         s.TranscriptionLanguage = TranscriptionLanguage;
-        s.QuestionProvider = (QuestionProvider)Math.Max(0, ProviderIndex);
-        s.ClaudeModel = string.IsNullOrWhiteSpace(ClaudeModel) ? "claude-opus-5" : ClaudeModel.Trim();
+        s.QuestionProvider = ProviderIndex == ClaudeIndex ? QuestionProvider.Claude : QuestionProvider.LocalModel;
+        s.LocalModelId = SelectedLocalModel?.Id;
+        s.UseCustomLocalModel = UseCustomLocalModel;
         s.LocalModelPath = LocalModelPath;
         s.LocalModelGpuLayers = double.IsNaN(LocalGpuLayers) ? -1 : (int)LocalGpuLayers;
-        s.LocalModelContextSize = double.IsNaN(LocalContextSize) ? 8192 : Math.Clamp((int)LocalContextSize, 2048, 131072);
+        s.LocalModelContextSize = double.IsNaN(LocalContextSize) || LocalContextSize < 2048 ? null : Math.Min((int)LocalContextSize, 131072);
+        s.ClaudeModel = string.IsNullOrWhiteSpace(ClaudeModel) ? "claude-opus-5" : ClaudeModel.Trim();
         s.DefaultQuestionCount = double.IsNaN(DefaultQuestionCount) ? 8 : Math.Clamp((int)DefaultQuestionCount, 1, 50);
         _settings.Save();
         _secrets.SetAnthropicApiKey(ApiKey);
+    }
+
+    private void RefreshLocalModelStatus()
+    {
+        var manager = Downloads.Models;
+        foreach (var option in LocalModelOptions)
+        {
+            var model = option.Info;
+            option.Status =
+                manager.IsDownloaded(model) ? "✓ Downloaded" :
+                Downloads.IsDownloading && Downloads.CurrentModel == model ? "Downloading…" :
+                manager.ResumableBytes(model) > 0 ? $"Paused at {DownloadProgress.FormatBytes(manager.ResumableBytes(model))}" :
+                "Not downloaded";
+        }
+
+        SelectedModelDownloaded = SelectedLocalModel is { } selected && manager.IsDownloaded(selected);
+        SelectedModelWarning = SelectedLocalModel is { } m ? LocalModelCatalog.HardwareWarning(m, HardwareProbe.Profile) : null;
+        OnPropertyChanged(nameof(CanDownloadSelected));
+    }
+
+    private static string DescribeHardware(HardwareProfile hardware)
+    {
+        var text = $"This PC: {Math.Round(hardware.SystemMemoryBytes / 1073741824.0)} GB memory";
+        if (hardware.GpuMemoryBytes >= 1_000_000_000)
+            text += $", {HardwareProbe.GpuName ?? "graphics card"} ({Math.Round(hardware.GpuMemoryBytes / 1073741824.0)} GB)";
+        return text + ".";
+    }
+
+    [RelayCommand]
+    private async Task DownloadLocalModelAsync()
+    {
+        if (SelectedLocalModel is not { } model) return;
+        try
+        {
+            await Downloads.DownloadAsync(model);
+        }
+        catch (Exception)
+        {
+            // Downloads.Error / ProgressText already describe what happened.
+        }
+    }
+
+    [RelayCommand]
+    private void CancelLocalModelDownload() => Downloads.Cancel();
+
+    [RelayCommand]
+    private void DeleteLocalModel()
+    {
+        if (SelectedLocalModel is { } model) Downloads.Delete(model);
+    }
+
+    [RelayCommand]
+    private async Task BrowseLocalModelAsync()
+    {
+        LocalModelPath = await Pickers.OpenFileAsync(".gguf") ?? LocalModelPath;
     }
 
     [RelayCommand]
@@ -115,48 +253,33 @@ public sealed partial class SettingsViewModel : ObservableObject
     }
 
     [RelayCommand]
-    private async Task BrowseLocalModelAsync()
-    {
-        LocalModelPath = await Pickers.OpenFileAsync(".gguf") ?? LocalModelPath;
-    }
-
-    [RelayCommand]
     private async Task DownloadWhisperModelAsync()
     {
         if (SelectedWhisperIndex < 0) return;
         var option = WhisperModelOptions[SelectedWhisperIndex];
         if (option.IsDownloaded) return;
 
-        IsDownloading = true;
-        _download = new CancellationTokenSource();
+        IsDownloadingWhisper = true;
+        WhisperDownloadError = null;
+        _whisperDownload = new CancellationTokenSource();
         try
         {
-            await _whisperModels.DownloadAsync(option.Info, new Progress<double>(p => DownloadProgress = p * 100), _download.Token);
+            await _whisperModels.DownloadAsync(option.Info, new Progress<double>(p => WhisperDownloadProgress = p * 100), _whisperDownload.Token);
             option.IsDownloaded = true;
         }
         catch (OperationCanceledException) { }
         catch (Exception ex)
         {
-            ApiKeyStatus = "";
-            DownloadError = "Download failed: " + ex.Message;
+            WhisperDownloadError = "Download failed: " + ex.Message;
         }
         finally
         {
-            IsDownloading = false;
-            _download.Dispose();
-            _download = null;
+            IsDownloadingWhisper = false;
+            _whisperDownload.Dispose();
+            _whisperDownload = null;
         }
     }
 
-    [ObservableProperty] public partial string? DownloadError { get; set; }
-
     [RelayCommand]
-    private void CancelDownload() => _download?.Cancel();
-
-    [RelayCommand]
-    private void DeleteWhisperModel(WhisperModelOption option)
-    {
-        _whisperModels.Delete(option.Info);
-        option.IsDownloaded = false;
-    }
+    private void CancelWhisperDownload() => _whisperDownload?.Cancel();
 }

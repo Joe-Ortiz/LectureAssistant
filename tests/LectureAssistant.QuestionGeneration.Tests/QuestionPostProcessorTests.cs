@@ -237,13 +237,34 @@ public class QuestionPostProcessorTests
     }
 
     [Fact]
-    public void Enforces_minimum_spacing_by_dropping_the_later_question()
+    public void Enforces_minimum_spacing_by_moving_crowded_questions_later()
     {
         var result = QuestionPostProcessor.Process(
             [Tf(100, prompt: "A"), Tf(125, prompt: "B"), Tf(150, prompt: "C"), Tf(300, prompt: "D")],
             Request(spacing: TimeSpan.FromSeconds(45)));
-        // A@110, B@130 (too close to A), C@160 (50s after A: kept), D@310.
-        Assert.Equal(["A", "C", "D"], result.Select(q => q.Prompt));
+        // A@110; B snaps to 130, too close, moves to the first sentence end 45s after A (160);
+        // C snaps to 160, moves to 210 (50s later, within the allowed shift); D@310 is clear.
+        Assert.Equal(["A", "B", "C", "D"], result.Select(q => q.Prompt));
+        Assert.Equal([S(110), S(160), S(210), S(310)], result.Select(q => q.Timestamp));
+    }
+
+    [Fact]
+    public void Drops_a_crowded_question_that_would_move_too_far_from_its_material()
+    {
+        var result = QuestionPostProcessor.Process(
+            [Tf(100, prompt: "A"), Tf(105, prompt: "B"), Tf(115, prompt: "C")],
+            Request(spacing: TimeSpan.FromSeconds(45)));
+        // A@110, B moves 110 -> 160 (50s), C would move 120 -> 210 (90s > MaxShift): dropped.
+        Assert.Equal(["A", "B"], result.Select(q => q.Prompt));
+    }
+
+    [Fact]
+    public void Spacing_relaxes_for_short_videos_so_the_requested_count_fits()
+    {
+        // 3 minutes, 5 questions requested, 45s preferred: 150 usable seconds / 6 = 25s spacing.
+        var drafts = Enumerable.Range(0, 5).Select(i => Tf(40 + i * 28, prompt: $"Q{i}")).ToList();
+        var result = QuestionPostProcessor.Process(drafts, Request(transcript: Transcript(180), count: 5, spacing: TimeSpan.FromSeconds(45)));
+        Assert.Equal(5, result.Count);
     }
 
     [Fact]
@@ -253,8 +274,9 @@ public class QuestionPostProcessorTests
         var result = QuestionPostProcessor.Process(
             [Tf(305, prompt: "Later in list"), Tf(301, prompt: "Earlier in list"), Tf(100, prompt: "First")],
             Request(spacing: TimeSpan.FromSeconds(30)));
-        Assert.Equal(["First", "Later in list"], result.Select(q => q.Prompt));
-        Assert.Equal([S(110), S(310)], result.Select(q => q.Timestamp));
+        // Stable order keeps "Later in list" at 310; the other is pushed 30s to the next free sentence end.
+        Assert.Equal(["First", "Later in list", "Earlier in list"], result.Select(q => q.Prompt));
+        Assert.Equal([S(110), S(310), S(340)], result.Select(q => q.Timestamp));
     }
 
     [Fact]

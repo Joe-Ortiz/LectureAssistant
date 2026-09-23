@@ -1,7 +1,9 @@
 using LectureAssistant.App.Services;
 using LectureAssistant.App.ViewModels;
 using LectureAssistant.Core;
+using LectureAssistant.Core.Downloads;
 using LectureAssistant.Core.Persistence;
+using LectureAssistant.QuestionGeneration.Local;
 using LectureAssistant.Transcription;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.UI.Xaml;
@@ -51,6 +53,10 @@ public partial class App : Application
             var models = sp.GetRequiredService<WhisperModelManager>();
             return new WhisperTranscriber(() => models.GetPath(WhisperModels.Find(settings.Current.WhisperModelId)));
         });
+        services.AddSingleton(_ => new HttpClient { Timeout = Timeout.InfiniteTimeSpan });
+        services.AddSingleton<FileDownloader>();
+        services.AddSingleton(sp => new LocalModelManager(AppPaths.LocalModels, sp.GetRequiredService<FileDownloader>()));
+        services.AddSingleton<ModelDownloadService>();
         services.AddSingleton<QuestionGeneratorFactory>();
         services.AddSingleton<ExporterCatalog>();
 

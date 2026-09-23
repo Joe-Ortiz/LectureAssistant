@@ -9,12 +9,108 @@
         <StackPanel Padding="32,24" Spacing="16" MaxWidth="820" HorizontalAlignment="Left">
             <TextBlock Text="Settings" Style="{StaticResource TitleTextBlockStyle}" />
 
+            <!-- Question suggestions -->
+            <Border Style="{StaticResource CardStyle}">
+                <StackPanel Spacing="12">
+                    <TextBlock Text="Question suggestions" Style="{StaticResource SubtitleTextBlockStyle}" />
+                    <RadioButtons SelectedIndex="{x:Bind ViewModel.ProviderIndex, Mode=TwoWay}">
+                        <x:String>On this PC: free, private, no account needed</x:String>
+                        <x:String>Claude by Anthropic: best quality, needs an Anthropic account and API key</x:String>
+                    </RadioButtons>
+
+                    <!-- On this PC -->
+                    <StackPanel Spacing="10" Visibility="{x:Bind ViewModel.UseLocalModel, Mode=OneWay}">
+                        <TextBlock TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                   Text="Lecture Assistant downloads a question-writing AI model once. After that it works offline, and your lectures never leave this PC." />
+
+                        <StackPanel Spacing="10" Visibility="{x:Bind ViewModel.UseBuiltInModel, Mode=OneWay}">
+                            <RadioButtons Header="Model" ItemsSource="{x:Bind ViewModel.LocalModelOptions}"
+                                          SelectedIndex="{x:Bind ViewModel.SelectedLocalModelIndex, Mode=TwoWay}">
+                                <RadioButtons.ItemTemplate>
+                                    <DataTemplate x:DataType="vm:LocalModelOption">
+                                        <StackPanel Margin="0,0,0,6">
+                                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                                <TextBlock Text="{x:Bind Title}" />
+                                                <Border Visibility="{x:Bind IsRecommended}" CornerRadius="4" Padding="6,1"
+                                                        Background="{ThemeResource AccentFillColorDefaultBrush}">
+                                                    <TextBlock Text="Recommended for this PC" Style="{StaticResource CaptionTextBlockStyle}"
+                                                               Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}" />
+                                                </Border>
+                                            </StackPanel>
+                                            <TextBlock Text="{x:Bind Description}" Style="{StaticResource CaptionTextBlockStyle}" TextWrapping="Wrap"
+                                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                            <TextBlock Text="{x:Bind Status, Mode=OneWay}" Style="{StaticResource CaptionTextBlockStyle}"
+                                                       Foreground="{ThemeResource AccentTextFillColorPrimaryBrush}" />
+                                        </StackPanel>
+                                    </DataTemplate>
+                                </RadioButtons.ItemTemplate>
+                            </RadioButtons>
+
+                            <TextBlock Text="{x:Bind ViewModel.HardwareText}" Style="{StaticResource CaptionTextBlockStyle}"
+                                       Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
+                            <InfoBar Severity="Warning" IsClosable="False" IsOpen="{x:Bind ViewModel.HasSelectedModelWarning, Mode=OneWay}"
+                                     Message="{x:Bind ViewModel.SelectedModelWarning, Mode=OneWay}" />
+
+                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                <Button Style="{StaticResource AccentButtonStyle}" Content="Download model"
+                                        Command="{x:Bind ViewModel.DownloadLocalModelCommand}"
+                                        Visibility="{x:Bind ViewModel.CanDownloadSelected, Mode=OneWay}" />
+                                <Button Content="Pause" Command="{x:Bind ViewModel.CancelLocalModelDownloadCommand}"
+                                        Visibility="{x:Bind ViewModel.Downloads.IsDownloading, Mode=OneWay}" />
+                                <Button Content="Remove from this PC" Command="{x:Bind ViewModel.DeleteLocalModelCommand}"
+                                        Visibility="{x:Bind ViewModel.SelectedModelDownloaded, Mode=OneWay}" />
+                            </StackPanel>
+                            <ProgressBar Value="{x:Bind ViewModel.Downloads.Percent, Mode=OneWay}"
+                                         Visibility="{x:Bind ViewModel.Downloads.IsDownloading, Mode=OneWay}" />
+                            <TextBlock Text="{x:Bind ViewModel.Downloads.ProgressText, Mode=OneWay}" Style="{StaticResource CaptionTextBlockStyle}"
+                                       AutomationProperties.LiveSetting="Polite" />
+                            <TextBlock Text="{x:Bind ViewModel.Downloads.Error, Mode=OneWay}" TextWrapping="Wrap"
+                                       Foreground="{ThemeResource SystemFillColorCriticalBrush}" />
+                        </StackPanel>
+
+                        <Expander Header="Advanced" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left">
+                            <StackPanel Spacing="10">
+                                <CheckBox Content="Use my own model file (.gguf) instead" IsChecked="{x:Bind ViewModel.UseCustomLocalModel, Mode=TwoWay}" />
+                                <StackPanel Orientation="Horizontal" Spacing="8" Visibility="{x:Bind ViewModel.UseCustomLocalModel, Mode=OneWay}">
+                                    <Button Content="Choose .gguf file…" Command="{x:Bind ViewModel.BrowseLocalModelCommand}" />
+                                    <TextBlock Text="{x:Bind ViewModel.LocalModelText, Mode=OneWay}" VerticalAlignment="Center"
+                                               TextTrimming="CharacterEllipsis" MaxWidth="460" />
+                                </StackPanel>
+                                <StackPanel Orientation="Horizontal" Spacing="16">
+                                    <NumberBox Header="GPU layers (-1 = automatic)" Value="{x:Bind ViewModel.LocalGpuLayers, Mode=TwoWay}"
+                                               Minimum="-1" Maximum="999" SpinButtonPlacementMode="Compact" Width="200" />
+                                    <NumberBox Header="Context size (0 = automatic)" Value="{x:Bind ViewModel.LocalContextSize, Mode=TwoWay}"
+                                               Minimum="0" Maximum="131072" SmallChange="2048" LargeChange="8192"
+                                               SpinButtonPlacementMode="Compact" Width="200" />
+                                </StackPanel>
+                            </StackPanel>
+                        </Expander>
+                    </StackPanel>
+
+                    <!-- Claude -->
+                    <StackPanel Spacing="8" Visibility="{x:Bind ViewModel.UseClaude, Mode=OneWay}">
+                        <PasswordBox Header="Anthropic API key" Password="{x:Bind ViewModel.ApiKey, Mode=TwoWay}"
+                                     PlaceholderText="sk-ant-…" HorizontalAlignment="Left" Width="520" />
+                        <TextBlock TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                   Text="Create a key at console.anthropic.com. It's stored encrypted in Windows Credential Manager for your account only. The lecture transcript is sent to Anthropic; the video is not. You pay Anthropic directly; a typical hour-long lecture costs well under a dollar." />
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <Button Content="Test key" Command="{x:Bind ViewModel.TestApiKeyCommand}" />
+                            <TextBlock Text="{x:Bind ViewModel.ApiKeyStatus, Mode=OneWay}" VerticalAlignment="Center" TextWrapping="Wrap" />
+                        </StackPanel>
+                        <TextBox Header="Model" Text="{x:Bind ViewModel.ClaudeModel, Mode=TwoWay}" Width="260" HorizontalAlignment="Left" />
+                    </StackPanel>
+
+                    <NumberBox Header="Default number of questions" Value="{x:Bind ViewModel.DefaultQuestionCount, Mode=TwoWay}" Minimum="1" Maximum="50"
+                               SpinButtonPlacementMode="Compact" Width="220" HorizontalAlignment="Left" />
+                </StackPanel>
+            </Border>
+
             <!-- Captions -->
             <Border Style="{StaticResource CardStyle}">
                 <StackPanel Spacing="12">
                     <TextBlock Text="Captions" Style="{StaticResource SubtitleTextBlockStyle}" />
                     <TextBlock TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                               Text="Speech recognition runs on this PC with OpenAI's Whisper model. It uses your graphics card when it can, which is much faster." />
+                               Text="Speech recognition runs on this PC. It uses your graphics card when it can, which is much faster." />
                     <RadioButtons Header="Speech model" SelectedIndex="{x:Bind ViewModel.SelectedWhisperIndex, Mode=TwoWay}"
                                   ItemsSource="{x:Bind ViewModel.WhisperModelOptions}">
                         <RadioButtons.ItemTemplate>
@@ -31,54 +127,15 @@
                     </RadioButtons>
                     <StackPanel Orientation="Horizontal" Spacing="8">
                         <Button Content="Download selected model now" Command="{x:Bind ViewModel.DownloadWhisperModelCommand}" />
-                        <Button Content="Cancel" Command="{x:Bind ViewModel.CancelDownloadCommand}" Visibility="{x:Bind ViewModel.IsDownloading, Mode=OneWay}" />
+                        <Button Content="Cancel" Command="{x:Bind ViewModel.CancelWhisperDownloadCommand}"
+                                Visibility="{x:Bind ViewModel.IsDownloadingWhisper, Mode=OneWay}" />
                     </StackPanel>
-                    <ProgressBar Value="{x:Bind ViewModel.DownloadProgress, Mode=OneWay}" Visibility="{x:Bind ViewModel.IsDownloading, Mode=OneWay}" />
-                    <TextBlock Text="{x:Bind ViewModel.DownloadError, Mode=OneWay}" TextWrapping="Wrap"
+                    <ProgressBar Value="{x:Bind ViewModel.WhisperDownloadProgress, Mode=OneWay}"
+                                 Visibility="{x:Bind ViewModel.IsDownloadingWhisper, Mode=OneWay}" />
+                    <TextBlock Text="{x:Bind ViewModel.WhisperDownloadError, Mode=OneWay}" TextWrapping="Wrap"
                                Foreground="{ThemeResource SystemFillColorCriticalBrush}" />
                     <ComboBox Header="Lecture language" ItemsSource="{x:Bind vm:SettingsViewModel.Languages}"
                               SelectedItem="{x:Bind ViewModel.TranscriptionLanguage, Mode=TwoWay}" MinWidth="160" />
-                </StackPanel>
-            </Border>
-
-            <!-- Questions -->
-            <Border Style="{StaticResource CardStyle}">
-                <StackPanel Spacing="12">
-                    <TextBlock Text="Question suggestions" Style="{StaticResource SubtitleTextBlockStyle}" />
-                    <RadioButtons SelectedIndex="{x:Bind ViewModel.ProviderIndex, Mode=TwoWay}">
-                        <x:String>Claude (your Anthropic API key): best quality, sends the transcript to Anthropic</x:String>
-                        <x:String>Local model on this PC: private and free, quality depends on the model and your hardware</x:String>
-                    </RadioButtons>
-
-                    <StackPanel Spacing="8" Visibility="{x:Bind ViewModel.UseClaude, Mode=OneWay}">
-                        <PasswordBox Header="Anthropic API key" Password="{x:Bind ViewModel.ApiKey, Mode=TwoWay}"
-                                     PlaceholderText="sk-ant-…" MaxWidth="520" HorizontalAlignment="Left" Width="520" />
-                        <TextBlock TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                   Text="Create a key at console.anthropic.com. It's stored encrypted in Windows Credential Manager for your account only. You pay Anthropic directly for usage; a typical hour-long lecture costs well under a dollar." />
-                        <StackPanel Orientation="Horizontal" Spacing="8">
-                            <Button Content="Test key" Command="{x:Bind ViewModel.TestApiKeyCommand}" />
-                            <TextBlock Text="{x:Bind ViewModel.ApiKeyStatus, Mode=OneWay}" VerticalAlignment="Center" TextWrapping="Wrap" />
-                        </StackPanel>
-                        <TextBox Header="Model" Text="{x:Bind ViewModel.ClaudeModel, Mode=TwoWay}" Width="260" HorizontalAlignment="Left" />
-                    </StackPanel>
-
-                    <StackPanel Spacing="8" Visibility="{x:Bind ViewModel.UseLocalModel, Mode=OneWay}">
-                        <TextBlock TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}"
-                                   Text="Choose an instruction-tuned model in GGUF format (for example a 7–9B model at Q4_K_M quantization, about 5 GB). Larger models write better questions but need more memory." />
-                        <StackPanel Orientation="Horizontal" Spacing="8">
-                            <Button Content="Choose .gguf model…" Command="{x:Bind ViewModel.BrowseLocalModelCommand}" />
-                            <TextBlock Text="{x:Bind ViewModel.LocalModelText, Mode=OneWay}" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" MaxWidth="480" />
-                        </StackPanel>
-                        <StackPanel Orientation="Horizontal" Spacing="16">
-                            <NumberBox Header="GPU layers (-1 = all)" Value="{x:Bind ViewModel.LocalGpuLayers, Mode=TwoWay}" Minimum="-1" Maximum="200"
-                                       SpinButtonPlacementMode="Compact" Width="180" />
-                            <NumberBox Header="Context size (tokens)" Value="{x:Bind ViewModel.LocalContextSize, Mode=TwoWay}" Minimum="2048" Maximum="131072"
-                                       SmallChange="2048" LargeChange="8192" SpinButtonPlacementMode="Compact" Width="200" />
-                        </StackPanel>
-                    </StackPanel>
-
-                    <NumberBox Header="Default number of questions" Value="{x:Bind ViewModel.DefaultQuestionCount, Mode=TwoWay}" Minimum="1" Maximum="50"
-                               SpinButtonPlacementMode="Compact" Width="220" HorizontalAlignment="Left" />
                 </StackPanel>
             </Border>
 

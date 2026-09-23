@@ -14,14 +14,22 @@ public sealed class AppSettings
     public string? WhisperModelId { get; set; }
     public string TranscriptionLanguage { get; set; } = "auto";
 
-    public QuestionProvider QuestionProvider { get; set; } = QuestionProvider.Claude;
+    /// <summary>Local by default: works without an account, and nothing leaves the PC.</summary>
+    public QuestionProvider QuestionProvider { get; set; } = QuestionProvider.LocalModel;
     public string ClaudeModel { get; set; } = "claude-opus-5";
 
+    /// <summary>Built-in model to use; null means the one recommended for this PC.</summary>
+    public string? LocalModelId { get; set; }
+
+    /// <summary>Advanced: run a .gguf file the user picked instead of a built-in model.</summary>
+    public bool UseCustomLocalModel { get; set; }
     public string? LocalModelPath { get; set; }
 
     /// <summary>Layers offloaded to the GPU; -1 = as many as fit.</summary>
     public int LocalModelGpuLayers { get; set; } = -1;
-    public int LocalModelContextSize { get; set; } = 8192;
+
+    /// <summary>Null uses the model's recommended context size.</summary>
+    public int? LocalModelContextSize { get; set; }
 
     public int DefaultQuestionCount { get; set; } = 8;
 }

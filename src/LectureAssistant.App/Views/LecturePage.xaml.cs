@@ -22,6 +22,21 @@ public sealed partial class LecturePage : Page
         InitializeComponent();
         ViewModel.SeekRequested += Seek;
         ViewModel.CaptionsReplaced += ReloadPreview;
+        ViewModel.ConfirmAsync = ConfirmAsync;
+    }
+
+    private async Task<bool> ConfirmAsync(string title, string message, string confirmText)
+    {
+        var dialog = new ContentDialog
+        {
+            XamlRoot = XamlRoot,
+            Title = title,
+            Content = new TextBlock { Text = message, TextWrapping = TextWrapping.Wrap },
+            PrimaryButtonText = confirmText,
+            CloseButtonText = "Not now",
+            DefaultButton = ContentDialogButton.Primary,
+        };
+        return await dialog.ShowAsync() == ContentDialogResult.Primary;
     }
 
     protected override async void OnNavigatedTo(NavigationEventArgs e)

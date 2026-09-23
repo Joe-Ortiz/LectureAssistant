@@ -7,6 +7,7 @@ public static class AppPaths
 
     public static string Projects => Path.Combine(DataRoot, "Projects");
     public static string WhisperModels => Path.Combine(DataRoot, "Models", "whisper");
+    public static string LocalModels => Path.Combine(DataRoot, "Models", "llm");
     public static string SettingsFile => Path.Combine(DataRoot, "settings.json");
 
     private static string ResolveDataRoot()

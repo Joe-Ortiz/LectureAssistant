@@ -19,8 +19,12 @@ public sealed partial class LectureViewModel(
     WhisperModelManager whisperModels,
     SettingsService settings,
     QuestionGeneratorFactory questionGenerators,
+    ModelDownloadService modelDownloads,
     ExporterCatalog exporters) : ObservableObject
 {
+    /// <summary>Asks the instructor a yes/no question (title, message, confirm button text); set by the page.</summary>
+    public Func<string, string, string, Task<bool>>? ConfirmAsync { get; set; }
+
     private LectureProject _project = new();
     private CancellationTokenSource? _operation;
     private bool _dirty;
@@ -294,8 +298,27 @@ public sealed partial class LectureViewModel(
             return;
         }
 
+        var modelToDownload = questionGenerators.ModelNeedingDownload();
+        if (modelToDownload is not null)
+        {
+            bool confirmed = ConfirmAsync is not null && await ConfirmAsync(
+                $"Download the question-writing model ({modelToDownload.SizeText})?",
+                "Lecture Assistant needs to download its AI model once. After that, questions are written on this PC: " +
+                "it works offline, needs no account, and your lectures stay private.\n\n" +
+                "On a typical home connection this takes a few minutes. If it's interrupted, it continues where it stopped next time.",
+                "Download");
+            if (!confirmed) return;
+        }
+
         await RunAsync("Writing questions…", async ct =>
         {
+            if (modelToDownload is not null)
+            {
+                await DownloadModelAsync(modelToDownload, ct);
+                OnPropertyChanged(nameof(QuestionProviderText));
+                BusyText = "Writing questions…";
+            }
+
             ProgressIndeterminate = true;
             var generator = questionGenerators.Create();
             var request = new QuestionGenerationRequest
@@ -315,10 +338,47 @@ public sealed partial class LectureViewModel(
             ReplaceQuestions(keep.Concat(generated).OrderBy(q => q.Timestamp));
             _dirty = true;
             await SaveIfDirtyAsync();
-            SuccessMessage = generated.Count == 0
-                ? "No usable questions came back. Try again, or add guidance about what to focus on."
-                : $"Added {generated.Count} suggested questions. Review each one; you're the expert.";
+            SuccessMessage = generated.Count switch
+            {
+                0 => "No usable questions came back. Try again, or add guidance about what to focus on.",
+                _ when generated.Count < request.QuestionCount =>
+                    $"Added {generated.Count} suggested question{(generated.Count == 1 ? "" : "s")} (you asked for {request.QuestionCount}; " +
+                    "there wasn't room for more without interrupting students too often). Review each one; you're the expert.",
+                _ => $"Added {generated.Count} suggested questions. Review each one; you're the expert.",
+            };
         });
+    }
+
+    /// <summary>Downloads through the app-wide service (so Settings shows the same progress), mirrored in this page's status panel.</summary>
+    private async Task DownloadModelAsync(QuestionGeneration.Local.LocalModelInfo model, CancellationToken ct)
+    {
+        BusyText = $"Downloading the question-writing model ({model.SizeText}, one time only)…";
+        void Mirror(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+        {
+            Progress = modelDownloads.Percent;
+            LiveText = modelDownloads.ProgressText;
+        }
+
+        modelDownloads.PropertyChanged += Mirror;
+        using var registration = ct.Register(modelDownloads.Cancel);
+        try
+        {
+            await modelDownloads.DownloadAsync(model);
+        }
+        catch (OperationCanceledException)
+        {
+            throw new OperationCanceledException(ct);
+        }
+        catch (Exception) when (modelDownloads.Error is { } message)
+        {
+            throw new InvalidOperationException(message);
+        }
+        finally
+        {
+            modelDownloads.PropertyChanged -= Mirror;
+            LiveText = "";
+            Progress = 0;
+        }
     }
 
     public void AddQuestionAt(TimeSpan timestamp)
