@@ -19,6 +19,7 @@ public sealed partial class MainWindow : Window
         Nav.SelectedItem = LecturesItem;
         Closed += async (_, _) =>
         {
+            PreviewWindow.CloseAll();
             if (ContentFrame.Content is LecturePage page) await page.ViewModel.SaveIfDirtyAsync();
         };
     }

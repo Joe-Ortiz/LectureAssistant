@@ -447,6 +447,33 @@ public sealed partial class LectureViewModel(
         });
     }
 
+    /// <summary>Raised when a student preview is ready for the view to open.</summary>
+    public event Func<PreviewRequest, Task>? PreviewReady;
+
+    [RelayCommand]
+    private async Task PreviewAsync()
+    {
+        var project = ToProject();
+        var problems = StudentPreview.Validate(project);
+        if (problems.Count > 0)
+        {
+            SuccessMessage = null;
+            ErrorMessage = "Fix these before previewing:\n• " + string.Join("\n• ", problems);
+            return;
+        }
+
+        ErrorMessage = null;
+        try
+        {
+            var request = await StudentPreview.PrepareAsync(project, CancellationToken.None);
+            if (PreviewReady is not null) await PreviewReady(request);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            ErrorMessage = "The preview couldn't be prepared: " + ex.Message;
+        }
+    }
+
     [RelayCommand]
     private void CancelOperation() => _operation?.Cancel();
 

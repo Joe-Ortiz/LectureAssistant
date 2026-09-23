@@ -1,4 +1,5 @@
 using System.Text;
+using LectureAssistant.App.Services;
 using LectureAssistant.App.ViewModels;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.UI.Dispatching;
@@ -23,6 +24,19 @@ public sealed partial class LecturePage : Page
         ViewModel.SeekRequested += Seek;
         ViewModel.CaptionsReplaced += ReloadPreview;
         ViewModel.ConfirmAsync = ConfirmAsync;
+        ViewModel.PreviewReady += OpenPreviewAsync;
+    }
+
+    private PreviewWindow? _preview;
+
+    /// <summary>One preview per lecture page: re-previewing replaces the old window so it reflects the latest edits.</summary>
+    private async Task OpenPreviewAsync(PreviewRequest request)
+    {
+        Player.MediaPlayer?.Pause();
+        _preview?.Close();
+        _preview = new PreviewWindow();
+        _preview.Closed += (sender, _) => { if (ReferenceEquals(sender, _preview)) _preview = null; };
+        await _preview.ShowAsync(request);
     }
 
     private async Task<bool> ConfirmAsync(string title, string message, string confirmText)
@@ -63,6 +77,7 @@ public sealed partial class LecturePage : Page
     {
         base.OnNavigatedFrom(e);
         _autosave?.Stop();
+        _preview?.Close();
         Player.MediaPlayer?.Pause();
         Player.SetMediaPlayer(null);
         ViewModel.CancelOperationCommand.Execute(null);

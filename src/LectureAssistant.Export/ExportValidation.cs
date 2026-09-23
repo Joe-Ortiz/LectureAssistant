@@ -6,11 +6,12 @@ namespace LectureAssistant.Export;
 /// <summary>Checks shared by every exporter: students watch on YouTube, and every question must be usable.</summary>
 internal static class ExportValidation
 {
-    public static IReadOnlyList<string> Validate(LectureProject project)
+    /// <param name="requireYouTube">False for a preview that can play the local video file instead.</param>
+    public static IReadOnlyList<string> Validate(LectureProject project, bool requireYouTube = true)
     {
         var problems = new List<string>();
 
-        if (project.YouTubeVideoId is null)
+        if (requireYouTube && project.YouTubeVideoId is null)
         {
             problems.Add(string.IsNullOrWhiteSpace(project.YouTubeUrl)
                 ? "Add the YouTube link for this lecture; students watch the video on YouTube."

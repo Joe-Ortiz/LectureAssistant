@@ -13,6 +13,8 @@
   <ItemGroup>
     <!-- Static SCORM player files, copied verbatim into every package. Resource name = path inside the zip. -->
     <EmbeddedResource Include="Assets\Scorm\*" LogicalName="Scorm/%(Filename)%(Extension)" />
+    <!-- Desktop-app student preview: stands in for the LMS. Never part of a package. -->
+    <EmbeddedResource Include="Assets\Preview\*" LogicalName="Preview/%(Filename)%(Extension)" />
   </ItemGroup>
 
   <ItemGroup>

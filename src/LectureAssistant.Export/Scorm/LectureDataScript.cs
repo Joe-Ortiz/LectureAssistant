@@ -27,7 +27,9 @@ internal static class LectureDataScript
         TypeInfoResolver = LectureDataJsonContext.Default,
     };
 
-    public static string Build(LectureProject project)
+    /// <param name="videoUrl">Preview only: play this video file instead of YouTube.</param>
+    /// <param name="captionsUrl">Preview only: WebVTT captions for <paramref name="videoUrl"/>.</param>
+    public static string Build(LectureProject project, string? videoUrl = null, string? captionsUrl = null)
     {
         var data = new LectureData(
             ExportValidation.TitleOrDefault(project),
@@ -38,7 +40,9 @@ internal static class LectureDataScript
                 project.Quiz.PreventSkippingAhead,
                 project.Quiz.AllowRetry,
                 project.Quiz.ShowCorrectAnswers),
-            ExportValidation.OrderedQuestions(project).Select(ToData).ToList());
+            ExportValidation.OrderedQuestions(project).Select(ToData).ToList(),
+            videoUrl,
+            captionsUrl);
 
         return Prefix + JsonSerializer.Serialize(data, JsonOptions) + ";\n";
     }
@@ -65,7 +69,9 @@ internal static class LectureDataScript
         string VideoId,
         string? Language,
         LectureSettings Settings,
-        IReadOnlyList<QuestionData> Questions);
+        IReadOnlyList<QuestionData> Questions,
+        string? VideoUrl = null,
+        string? CaptionsUrl = null);
 
     internal sealed record LectureSettings(
         double PassingScorePercent,

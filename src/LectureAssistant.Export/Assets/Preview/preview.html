@@ -1,0 +1,193 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
+  <title>Student preview</title>
+  <style>
+    :root {
+      --ink: #1b1f24;
+      --muted: #57606a;
+      --line: #d8dee4;
+      --panel: #f6f8fa;
+      --accent: #2563eb;
+      --good: #1a7f37;
+      --good-bg: #dafbe1;
+      --bad: #b42318;
+      --bad-bg: #ffebe9;
+      --info-bg: #ddf4ff;
+      font-family: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+      color: var(--ink);
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; background: #fff; }
+    body { display: flex; flex-direction: column; }
+
+    .bar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px 24px;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 20px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--line);
+    }
+    .intro h1 { margin: 0; font-size: 1rem; }
+    .intro p { margin: 2px 0 0; font-size: 0.85rem; color: var(--muted); max-width: 60ch; }
+    .intro .local { color: var(--ink); }
+
+    .gradebook {
+      display: flex;
+      gap: 16px;
+      align-items: center;
+      padding: 8px 14px;
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+    .gradebook .label { font-size: 0.75rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+    .gradebook .value { font-size: 1.05rem; font-weight: 600; }
+    .pill { display: inline-block; padding: 1px 10px; border-radius: 999px; font-size: 0.9rem; font-weight: 600; background: var(--panel); }
+    .pill.passed, .pill.completed { background: var(--good-bg); color: var(--good); }
+    .pill.failed { background: var(--bad-bg); color: var(--bad); }
+    .pill.incomplete { background: var(--info-bg); color: #0a3069; }
+
+    button {
+      font: inherit;
+      font-size: 0.9rem;
+      padding: 6px 14px;
+      border-radius: 6px;
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--ink);
+      cursor: pointer;
+    }
+    button:hover { background: var(--panel); }
+    button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+    iframe { flex: 1; width: 100%; border: 0; }
+
+    .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  </style>
+</head>
+<body>
+  <div class="bar">
+    <div class="intro">
+      <h1>Student preview</h1>
+      <p>This is exactly what students will see. Try answering like a student would; nothing here is saved or sent anywhere.</p>
+      <p id="local-note" class="local" hidden>Playing your video file because this lecture doesn't have a YouTube link yet. Students will watch the YouTube version.</p>
+    </div>
+    <div class="gradebook" role="group" aria-labelledby="gradebook-label">
+      <div>
+        <div id="gradebook-label" class="label">Your LMS would record</div>
+        <div class="value"><span id="status" class="pill">Not started</span></div>
+      </div>
+      <div>
+        <div class="label">Score</div>
+        <div id="score" class="value">–</div>
+      </div>
+      <button id="restart" type="button">Start over</button>
+    </div>
+  </div>
+
+  <iframe id="lecture" title="Lecture as students see it" allow="autoplay; fullscreen; encrypted-media; picture-in-picture" allowfullscreen></iframe>
+  <div id="announcer" class="visually-hidden" aria-live="polite"></div>
+
+  <script>
+    (function () {
+      'use strict';
+
+      var store, lastError, recording;
+      var statusText = {
+        'not attempted': 'Not started',
+        'incomplete': 'In progress',
+        'passed': 'Passed',
+        'failed': 'Failed',
+        'completed': 'Completed',
+        'browsed': 'Viewed'
+      };
+      var errors = { '0': 'No error', '101': 'General exception', '201': 'Invalid argument', '301': 'Not initialized', '401': 'Not implemented' };
+
+      function reset() {
+        store = {
+          'cmi.core.student_id': 'preview',
+          'cmi.core.student_name': 'Student, Preview',
+          'cmi.core.lesson_location': '',
+          'cmi.core.credit': 'credit',
+          'cmi.core.lesson_status': 'not attempted',
+          'cmi.core.entry': 'ab-initio',
+          'cmi.core.score.raw': '',
+          'cmi.core.score.min': '',
+          'cmi.core.score.max': '',
+          'cmi.core.total_time': '0000:00:00.00',
+          'cmi.core.lesson_mode': 'normal',
+          'cmi.core.exit': '',
+          'cmi.core.session_time': '',
+          'cmi.suspend_data': '',
+          'cmi.launch_data': ''
+        };
+        lastError = '0';
+        render();
+      }
+
+      function render() {
+        var status = store['cmi.core.lesson_status'];
+        var pill = document.getElementById('status');
+        pill.textContent = statusText[status] || status;
+        pill.className = 'pill ' + status.replace(/\s+/g, '-');
+        var raw = store['cmi.core.score.raw'];
+        document.getElementById('score').textContent = raw === '' ? '–' : Math.round(parseFloat(raw)) + '%';
+      }
+
+      // SCORM 1.2 runtime API, kept in memory. The player finds it by walking up from its frame.
+      window.API = {
+        LMSInitialize: function () { lastError = '0'; return 'true'; },
+        LMSFinish: function () { lastError = '0'; return 'true'; },
+        LMSGetValue: function (name) {
+          if (Object.prototype.hasOwnProperty.call(store, name)) { lastError = '0'; return store[name]; }
+          lastError = '401';
+          return '';
+        },
+        LMSSetValue: function (name, value) {
+          if (!recording) return 'true';
+          store[name] = String(value);
+          lastError = '0';
+          if (name === 'cmi.core.lesson_status' || name === 'cmi.core.score.raw') {
+            render();
+            document.getElementById('announcer').textContent =
+              'Your LMS would record: ' + document.getElementById('status').textContent + ', score ' + document.getElementById('score').textContent;
+          }
+          return 'true';
+        },
+        LMSCommit: function () { lastError = '0'; return 'true'; },
+        LMSGetLastError: function () { return lastError; },
+        LMSGetErrorString: function (code) { return errors[String(code)] || ''; },
+        LMSGetDiagnostic: function () { return ''; }
+      };
+
+      var frame = document.getElementById('lecture');
+
+      function start() {
+        reset();
+        recording = true;
+        frame.src = 'index.html?t=' + Date.now();
+      }
+
+      // Unload the old attempt first, so its "closing" calls can't leak into the fresh one.
+      document.getElementById('restart').addEventListener('click', function () {
+        recording = false;
+        frame.addEventListener('load', function onBlank() {
+          frame.removeEventListener('load', onBlank);
+          start();
+        });
+        frame.src = 'about:blank';
+      });
+
+      if (/[?&]local=1/.test(window.location.search)) document.getElementById('local-note').hidden = false;
+      start();
+    })();
+  </script>
+</body>
+</html>

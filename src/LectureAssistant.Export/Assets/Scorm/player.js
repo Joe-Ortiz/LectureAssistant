@@ -98,7 +98,7 @@
     dom.videoMessage.hidden = false;
   }
 
-  if (!data || !data.questions || !data.videoId) {
+  if (!data || !data.questions || !(data.videoId || data.videoUrl)) {
     showVideoMessage('This lecture package is incomplete: lecture-data.js is missing or damaged.');
     return;
   }
@@ -908,8 +908,61 @@
     window.setInterval(tick, POLL_MS);
   }
 
+  /**
+   * Plays a video file with a <video> element behind the same small interface as the YouTube player.
+   * Only used by the desktop app's student preview (data.videoUrl), so instructors can check a lecture
+   * before uploading it; exported packages always use YouTube.
+   */
+  function createFilePlayer() {
+    var video = document.createElement('video');
+    video.src = data.videoUrl;
+    video.controls = true;
+    video.playsInline = true;
+    video.preload = 'metadata';
+    if (data.captionsUrl) {
+      var track = document.createElement('track');
+      track.kind = 'captions';
+      track.label = 'Captions';
+      track.srclang = data.language || 'en';
+      track.src = data.captionsUrl;
+      track.default = true;
+      video.appendChild(track);
+    }
+    document.getElementById('player').appendChild(video);
+
+    player = {
+      getCurrentTime: function () { return video.currentTime; },
+      getDuration: function () { return isFinite(video.duration) ? video.duration : 0; },
+      getPlayerState: function () { return video.ended ? 0 : (video.paused ? 2 : 1); },
+      playVideo: function () {
+        var result = video.play();
+        if (result && result.catch) result.catch(function () { /* autoplay refused: the student presses play */ });
+      },
+      pauseVideo: function () { video.pause(); },
+      seekTo: function (seconds) { video.currentTime = seconds; },
+      getIframe: function () { return video; }
+    };
+
+    var readied = false;
+    video.addEventListener('loadedmetadata', function () {
+      if (readied) return;
+      readied = true;
+      if (resumeAt > 0) video.currentTime = resumeAt;
+      onReady();
+    });
+    video.addEventListener('play', function () { onStateChange({ data: 1 }); });
+    video.addEventListener('ended', function () { onStateChange({ data: 0 }); });
+    video.addEventListener('error', function () {
+      showVideoMessage('This video file could not be played here. MP4 (H.264) videos work best; students will watch the YouTube version.');
+    });
+  }
+
   function createPlayer() {
     if (player) return;
+    if (data.videoUrl) {
+      createFilePlayer();
+      return;
+    }
     var vars = {
       rel: 0,
       modestbranding: 1,
@@ -1030,7 +1083,8 @@
     updateStatus();
     renderMarkers();
     setUpFullscreen();
-    loadYouTube();
+    if (data.videoUrl) createPlayer();
+    else loadYouTube();
 
     window.addEventListener('pagehide', exit);
     window.addEventListener('beforeunload', exit);
