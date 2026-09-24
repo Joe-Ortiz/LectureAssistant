@@ -10,4 +10,7 @@
     <Project Path="tests/LectureAssistant.Export.Tests/LectureAssistant.Export.Tests.csproj" />
     <Project Path="tests/LectureAssistant.QuestionGeneration.Tests/LectureAssistant.QuestionGeneration.Tests.csproj" />
   </Folder>
+  <Project Path="src/LectureAssistant.App/LectureAssistant.App.csproj">
+    <Platform Project="x64" />
+  </Project>
 </Solution>
