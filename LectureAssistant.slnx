@@ -12,5 +12,6 @@
   </Folder>
   <Project Path="src/LectureAssistant.App/LectureAssistant.App.csproj">
     <Platform Project="x64" />
+    <Deploy />
   </Project>
 </Solution>
