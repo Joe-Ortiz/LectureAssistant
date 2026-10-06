@@ -65,6 +65,19 @@ public class ModelAndStoreTests
             Assert.Equal(TimeSpan.FromSeconds(95), loaded.Questions[0].Timestamp);
             Assert.Equal(QuestionType.TrueFalse, loaded.Questions[0].Type);
             Assert.Single(loaded.Captions);
+            Assert.Null(loaded.Quiz.MinimumQuestionSpacing);
+
+            project.Quiz.MinimumQuestionSpacing = TimeSpan.FromSeconds(90);
+            await store.SaveAsync(project);
+            Assert.Equal(TimeSpan.FromSeconds(90), (await store.LoadAsync(project.Id))!.Quiz.MinimumQuestionSpacing);
+
+            // Lectures saved before the setting existed still load.
+            Directory.CreateDirectory(Path.Combine(root, "old"));
+            await File.WriteAllTextAsync(Path.Combine(root, "old", "project.json"), """{ "id": "old", "title": "Old", "quiz": { "passingScorePercent": 80 } }""");
+            var old = await store.LoadAsync("old");
+            Assert.Equal(80, old!.Quiz.PassingScorePercent);
+            Assert.Null(old.Quiz.MinimumQuestionSpacing);
+            store.Delete("old");
 
             Directory.CreateDirectory(Path.Combine(root, "corrupt"));
             await File.WriteAllTextAsync(Path.Combine(root, "corrupt", "project.json"), "{ nope");

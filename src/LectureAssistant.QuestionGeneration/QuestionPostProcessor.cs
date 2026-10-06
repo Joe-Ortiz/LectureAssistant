@@ -40,20 +40,21 @@ public static partial class QuestionPostProcessor
         }
 
         // Stable sort keeps the model's order for equal timestamps; the earlier one then wins spacing.
+        // The instructor's minimum is strict: a question that can't keep it is dropped, never squeezed in.
         var ordered = candidates.OrderBy(q => q.Timestamp).ToList();
-        var spacing = EffectiveSpacing(segments, request);
+        var spacing = request.MinimumSpacing > TimeSpan.Zero ? request.MinimumSpacing : TimeSpan.Zero;
+        var reserved = request.ReservedTimes.ToList();
+        var slots = Slots(segments);
         var spaced = new List<Question>();
         foreach (var q in ordered)
         {
-            if (spaced.Count > 0 && q.Timestamp - spaced[^1].Timestamp < spacing)
-            {
-                // Too close to the previous question: move it to a later sentence end if one is near enough
-                // that the question still follows the material it's about; otherwise drop it.
-                var earliest = spaced[^1].Timestamp + spacing;
-                var slot = segments.Select(s => s.End).FirstOrDefault(end => end >= earliest);
-                if (slot == default || slot - q.Timestamp > MaxShift) continue;
-                q.Timestamp = slot;
-            }
+            // Too close to the previous question or a kept one: move it to a later sentence end if one is near
+            // enough that the question still follows the material it's about; otherwise drop it.
+            var earliest = q.Timestamp;
+            if (spaced.Count > 0 && spaced[^1].Timestamp + spacing > earliest) earliest = spaced[^1].Timestamp + spacing;
+            var slot = slots.FirstOrDefault(s => s >= earliest && IsClear(s, reserved, spacing), TimeSpan.MinValue);
+            if (slot == TimeSpan.MinValue || slot - q.Timestamp > MaxShift) continue;
+            q.Timestamp = slot;
             spaced.Add(q);
         }
 
@@ -64,16 +65,43 @@ public static partial class QuestionPostProcessor
     public static readonly TimeSpan MaxShift = TimeSpan.FromSeconds(60);
 
     /// <summary>
-    /// The requested spacing, relaxed for short videos so the requested number of questions can fit
-    /// (never below 15 seconds, so students aren't interrupted constantly).
+    /// The most new questions that can fit on the lecture's timeline with the request's minimum spacing, away from
+    /// its reserved times (<see cref="int.MaxValue"/> when there's no minimum).
     /// </summary>
-    internal static TimeSpan EffectiveSpacing(IReadOnlyList<Timeline.Span> segments, QuestionGenerationRequest request)
+    public static int Capacity(QuestionGenerationRequest request) =>
+        Capacity(request.Transcript, request.MinimumSpacing, request.ReservedTimes);
+
+    /// <inheritdoc cref="Capacity(QuestionGenerationRequest)"/>
+    internal static int Capacity(IEnumerable<CaptionSegment> transcript, TimeSpan spacing, IEnumerable<TimeSpan> reservedTimes)
     {
-        var usable = segments[^1].End - (segments[^1].End > LeadIn ? LeadIn : TimeSpan.Zero);
-        var fit = usable / Math.Max(1, request.QuestionCount + 1);
-        var floor = TimeSpan.FromSeconds(15);
-        return request.MinimumSpacing <= fit ? request.MinimumSpacing : fit < floor ? floor : fit;
+        var segments = Timeline.From(transcript);
+        if (segments.Count == 0) return 0;
+        if (spacing <= TimeSpan.Zero) return int.MaxValue;
+
+        // Taking the earliest usable sentence end each time fits the most questions.
+        var reserved = reservedTimes.ToList();
+        int count = 0;
+        TimeSpan? previous = null;
+        foreach (var slot in Slots(segments))
+        {
+            if (previous is { } p && slot - p < spacing) continue;
+            if (!IsClear(slot, reserved, spacing)) continue;
+            count++;
+            previous = slot;
+        }
+        return count;
     }
+
+    /// <summary>Where a question can go: sentence ends in time order, skipping the lead-in the way <see cref="Snap"/> does.</summary>
+    private static List<TimeSpan> Slots(IReadOnlyList<Timeline.Span> segments)
+    {
+        bool skipLeadIn = segments[^1].End > LeadIn;
+        return segments.Select(s => s.End).Where(end => !skipLeadIn || end >= LeadIn).Distinct().Order().ToList();
+    }
+
+    /// <summary>True when <paramref name="time"/> is at least <paramref name="spacing"/> from every reserved time.</summary>
+    private static bool IsClear(TimeSpan time, IReadOnlyList<TimeSpan> reserved, TimeSpan spacing) =>
+        reserved.All(r => (time - r).Duration() >= spacing);
 
     internal static Question ToQuestion(QuestionDraft draft, QuestionType type)
     {
@@ -142,18 +170,31 @@ public static partial class QuestionPostProcessor
         return snapped;
     }
 
-    /// <summary>Keeps <paramref name="count"/> items evenly spread across the list (which is in time order).</summary>
+    /// <summary>
+    /// Keeps the <paramref name="count"/> questions (of a list in time order) closest to evenly spaced times between
+    /// the first and last, so the kept ones spread across the lecture even when the candidates are bunched up.
+    /// Only removes questions, so it never brings two closer together.
+    /// </summary>
     internal static IReadOnlyList<Question> SpreadTrim(IReadOnlyList<Question> questions, int count)
     {
         if (questions.Count <= count) return questions;
         if (count <= 0) return [];
-        if (count == 1) return [questions[(questions.Count - 1) / 2]];
 
+        var first = questions[0].Timestamp;
+        var span = questions[^1].Timestamp - first;
         var result = new List<Question>(count);
+        int next = 0;
         for (int i = 0; i < count; i++)
         {
-            var index = (int)Math.Round(i * (questions.Count - 1) / (double)(count - 1), MidpointRounding.AwayFromZero);
-            result.Add(questions[index]);
+            var target = first + (count == 1 ? span / 2 : span * i / (count - 1));
+            // Leave enough later questions for the remaining targets; ties go to the earlier question.
+            int best = next, last = questions.Count - (count - i);
+            for (int j = next + 1; j <= last; j++)
+            {
+                if ((questions[j].Timestamp - target).Duration() < (questions[best].Timestamp - target).Duration()) best = j;
+            }
+            result.Add(questions[best]);
+            next = best + 1;
         }
         return result;
     }

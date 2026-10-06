@@ -100,9 +100,7 @@ public sealed class LocalLlmQuestionGenerator : IQuestionGenerator
                 $"The context size ({contextSize} tokens) is too small for question generation. Increase it to at least 8192 in Settings.");
 
         var chunks = TranscriptChunker.Chunk(request.Transcript, transcriptBudget, CountTokens);
-        var durations = chunks.Select(c => TranscriptChunker.Duration(c).TotalSeconds).ToList();
-        var capacities = durations.Select(d => Math.Min(maxQuestionsPerSection, SpacingCapacity(d, request.MinimumSpacing))).ToList();
-        var allocation = TranscriptChunker.Allocate(durations, capacities, request.QuestionCount);
+        var allocation = PlanSections(chunks, request, maxQuestionsPerSection);
 
         var drafts = new List<QuestionDraft>();
         int failedSections = 0, attemptedSections = 0;
@@ -205,8 +203,20 @@ public sealed class LocalLlmQuestionGenerator : IQuestionGenerator
         return sb.ToString();
     }
 
-    private static int SpacingCapacity(double durationSeconds, TimeSpan spacing) =>
-        spacing <= TimeSpan.Zero ? int.MaxValue : Math.Max(1, (int)(durationSeconds / spacing.TotalSeconds) + 1);
+    /// <summary>
+    /// How many questions to ask each section for: shared out by duration, never more than fit in the section at the
+    /// minimum spacing (away from questions being kept), and never more than fit in the whole lecture.
+    /// </summary>
+    internal static int[] PlanSections(
+        IReadOnlyList<IReadOnlyList<CaptionSegment>> chunks, QuestionGenerationRequest request, int maxQuestionsPerSection)
+    {
+        var durations = chunks.Select(c => TranscriptChunker.Duration(c).TotalSeconds).ToList();
+        var capacities = chunks
+            .Select(c => Math.Min(maxQuestionsPerSection, QuestionPostProcessor.Capacity(c, request.MinimumSpacing, request.ReservedTimes)))
+            .ToList();
+        var total = Math.Min(request.QuestionCount, QuestionPostProcessor.Capacity(request));
+        return TranscriptChunker.Allocate(durations, capacities, total);
+    }
 
     private static ModelParams CreateModelParams(LocalLlmOptions options)
     {

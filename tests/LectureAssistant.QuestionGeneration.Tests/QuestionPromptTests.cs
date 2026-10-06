@@ -64,6 +64,20 @@ public class QuestionPromptTests
     }
 
     [Fact]
+    public void Kept_questions_near_the_section_are_listed()
+    {
+        var request = Request(spacing: TimeSpan.FromSeconds(60)) with
+        {
+            ReservedTimes = [TimeSpan.FromSeconds(400), TimeSpan.FromSeconds(90)],
+        };
+        Assert.Contains("Questions already placed at (keep the same spacing from these): 90s, 400s\n", QuestionPrompt.BuildUserMessage(request, 3));
+
+        var section = new TranscriptSection(2, 3, request.Transcript.Skip(20).Take(20).ToList()); // 200-400
+        Assert.Contains("Questions already placed at (keep the same spacing from these): 400s\n", QuestionPrompt.BuildUserMessage(request, 1, section));
+        Assert.DoesNotContain("already placed", QuestionPrompt.BuildUserMessage(Request(), 3));
+    }
+
+    [Fact]
     public void System_prompt_covers_the_rules_the_post_processor_relies_on()
     {
         Assert.Contains("___", QuestionPrompt.SystemPrompt);
@@ -80,5 +94,11 @@ public class QuestionPromptTests
 
         Assert.Throws<QuestionGenerationException>(() => QuestionPrompt.EnsureUsable(Request() with { AllowedTypes = [] }));
         Assert.Throws<QuestionGenerationException>(() => QuestionPrompt.EnsureUsable(Request(count: 0)));
+
+        var noRoom = Request(Transcript(120), spacing: TimeSpan.FromSeconds(60)) with
+        {
+            ReservedTimes = [TimeSpan.FromSeconds(60), TimeSpan.FromSeconds(120)],
+        };
+        Assert.Equal(QuestionGenerationFailure.BadRequest, Assert.Throws<QuestionGenerationException>(() => QuestionPrompt.EnsureUsable(noRoom)).Failure);
     }
 }

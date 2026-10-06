@@ -41,8 +41,17 @@ public sealed record QuestionGenerationRequest
     /// <summary>Free-form instructor direction, e.g. "focus on the derivation, intro-level students".</summary>
     public string? InstructorGuidance { get; init; }
 
-    /// <summary>Questions closer together than this are spread out or dropped.</summary>
-    public TimeSpan MinimumSpacing { get; init; } = TimeSpan.FromSeconds(45);
+    /// <summary>
+    /// The instructor's minimum time between questions. It's never relaxed: questions closer together than this
+    /// are moved later or dropped, so fewer than <see cref="QuestionCount"/> come back when they don't fit.
+    /// </summary>
+    public TimeSpan MinimumSpacing { get; init; } = QuizSettings.DefaultMinimumQuestionSpacing;
+
+    /// <summary>
+    /// Times of questions already on the timeline that are being kept. New questions stay at least
+    /// <see cref="MinimumSpacing"/> away from them; <see cref="QuestionCount"/> counts only new questions.
+    /// </summary>
+    public IReadOnlyCollection<TimeSpan> ReservedTimes { get; init; } = [];
 }
 
 public interface IQuestionGenerator

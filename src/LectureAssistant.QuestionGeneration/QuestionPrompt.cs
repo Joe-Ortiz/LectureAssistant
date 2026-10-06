@@ -86,6 +86,16 @@ internal static class QuestionPrompt
         sb.Append("Allowed types: ").AppendJoin(", ", typeNames).Append('\n');
         sb.Append(CultureInfo.InvariantCulture, $"Minimum spacing between questions: {Math.Round(request.MinimumSpacing.TotalSeconds)} seconds.\n");
 
+        // Only kept questions near this part of the lecture matter for placement.
+        var lines = Ordered(segments).ToList();
+        var kept = request.ReservedTimes
+            .Where(t => lines.Count > 0 && t > lines[0].Start - request.MinimumSpacing && t < lines[^1].End + request.MinimumSpacing)
+            .Order()
+            .Select(t => string.Create(CultureInfo.InvariantCulture, $"{Math.Round(t.TotalSeconds)}s"))
+            .ToList();
+        if (kept.Count > 0)
+            sb.Append("Questions already placed at (keep the same spacing from these): ").AppendJoin(", ", kept).Append('\n');
+
         if (!string.IsNullOrWhiteSpace(request.InstructorGuidance))
         {
             sb.Append("\nInstructor guidance:\n<guidance>\n").Append(request.InstructorGuidance.Trim()).Append("\n</guidance>\n");
@@ -125,6 +135,10 @@ internal static class QuestionPrompt
         if (request.QuestionCount <= 0)
             throw new QuestionGenerationException(QuestionGenerationFailure.BadRequest,
                 "Choose how many questions to generate.");
+        if (QuestionPostProcessor.Capacity(request) == 0)
+            throw new QuestionGenerationException(QuestionGenerationFailure.BadRequest,
+                "There's no room for more questions: the existing ones already fill the lecture at the minimum time between questions. " +
+                "Lower the minimum time, or replace the existing questions.");
     }
 
     private static string Whitespace(string text) => string.Join(' ', text.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));

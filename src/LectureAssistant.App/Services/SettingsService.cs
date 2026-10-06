@@ -1,4 +1,5 @@
 using System.Text.Json;
+using LectureAssistant.Core.Models;
 using LectureAssistant.Core.Persistence;
 
 namespace LectureAssistant.App.Services;
@@ -32,6 +33,9 @@ public sealed class AppSettings
     public int? LocalModelContextSize { get; set; }
 
     public int DefaultQuestionCount { get; set; } = 8;
+
+    /// <summary>The last "Minimum time between questions" chosen, used for lectures that haven't set their own.</summary>
+    public TimeSpan DefaultMinimumQuestionSpacing { get; set; } = QuizSettings.DefaultMinimumQuestionSpacing;
 }
 
 /// <summary>Non-secret preferences, stored as JSON. The API key lives in <see cref="SecretStore"/>.</summary>

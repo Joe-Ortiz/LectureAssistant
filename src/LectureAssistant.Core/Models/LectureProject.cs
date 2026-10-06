@@ -60,4 +60,13 @@ public sealed class QuizSettings
 
     /// <summary>Reveal the correct answer and explanation after a student answers.</summary>
     public bool ShowCorrectAnswers { get; set; } = true;
+
+    public static readonly TimeSpan DefaultMinimumQuestionSpacing = TimeSpan.FromSeconds(60);
+
+    /// <summary>
+    /// Shortest time allowed between questions, so students aren't interrupted constantly. Suggested questions
+    /// always keep it; questions placed closer by hand are flagged. Null (lectures saved before this setting
+    /// existed) means the app's default.
+    /// </summary>
+    public TimeSpan? MinimumQuestionSpacing { get; set; }
 }

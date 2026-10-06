@@ -12,6 +12,23 @@ public static class TimeText
     public static string FormatPrecise(TimeSpan t) =>
         Format(TimeSpan.FromSeconds(Math.Floor(t.TotalSeconds))) + "." + (t.Milliseconds / 100).ToString(CultureInfo.InvariantCulture);
 
+    /// <summary>A length of time in words: "20 seconds", "1 minute", "1.5 minutes", "2 minutes 10 seconds".</summary>
+    public static string Describe(TimeSpan t)
+    {
+        var total = (long)Math.Floor(Math.Max(0, t.TotalSeconds));
+        if (total < 60) return total == 1 ? "1 second" : $"{total} seconds";
+
+        long minutes = total / 60, seconds = total % 60;
+        var minutesText = minutes == 1 ? "1 minute" : $"{minutes} minutes";
+        return seconds switch
+        {
+            0 => minutesText,
+            30 => $"{minutes}.5 minutes",
+            1 => minutesText + " 1 second",
+            _ => $"{minutesText} {seconds} seconds",
+        };
+    }
+
     public static bool TryParse(string? text, out TimeSpan value)
     {
         value = TimeSpan.Zero;

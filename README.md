@@ -4,7 +4,7 @@ A Windows desktop app (Microsoft Store, .NET 10 + WinUI 3) that helps instructor
 
 1. **Import** a lecture video.
 2. **Captions** are generated on the instructor's PC with Whisper, then reviewed and edited in the app.
-3. **Questions** are suggested from the timestamped transcript by an AI model the app downloads and runs on the PC. Instructors can choose Claude with their own API key instead. The questions are then reviewed and edited on the video timeline.
+3. **Questions** are suggested from the timestamped transcript by an AI model the app downloads and runs on the PC. Instructors can choose Claude with their own API key instead. Suggested questions always keep the instructor's "Minimum time between questions" (1 minute by default, saved with each lecture), including from questions already placed; if fewer fit, fewer are suggested. The questions are then reviewed and edited on the video timeline, where any placed closer than the minimum are flagged.
 4. **Publish**: the instructor uploads the video to YouTube (unlisted) with the caption file, pastes the link, and exports:
    - a **SCORM 1.2 package** for Canvas, Moodle, Blackboard or D2L. The LMS identifies the student and records the score in the gradebook; no server needed.
    - an **H5P Interactive Video** (`.h5p`) for schools with an H5P platform.

@@ -192,6 +192,13 @@
                                         </StackPanel>
                                     </StackPanel>
                                 </StackPanel>
+                                <StackPanel Spacing="4">
+                                    <ComboBox Header="Minimum time between questions" ItemsSource="{x:Bind vm:LectureViewModel.MinimumSpacingNames}"
+                                              SelectedIndex="{x:Bind ViewModel.MinimumSpacingIndex, Mode=TwoWay}" MinWidth="200" />
+                                    <TextBlock TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}"
+                                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                               Text="Suggested questions are always at least this far apart, so you may get fewer than you asked for. Questions closer together are flagged below." />
+                                </StackPanel>
                                 <TextBox Header="Guidance (optional)" TextWrapping="Wrap" AcceptsReturn="True"
                                          PlaceholderText="e.g. Intro-level students. Focus on the derivation in the second half; skip the history."
                                          Text="{x:Bind ViewModel.Guidance, Mode=TwoWay}" />
@@ -240,6 +247,17 @@
                                                         ToolTipService.ToolTip="Delete question" AutomationProperties.Name="Delete question">
                                                     <SymbolIcon Symbol="Delete" />
                                                 </Button>
+                                            </Grid>
+
+                                            <Grid ColumnSpacing="6" Visibility="{x:Bind HasSpacingWarning, Mode=OneWay}">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="Auto" />
+                                                    <ColumnDefinition Width="*" />
+                                                </Grid.ColumnDefinitions>
+                                                <FontIcon Glyph="&#xE7BA;" FontSize="14" VerticalAlignment="Top" Margin="0,2,0,0"
+                                                          Foreground="{ThemeResource SystemFillColorCautionBrush}" AutomationProperties.AccessibilityView="Raw" />
+                                                <TextBlock Grid.Column="1" Text="{x:Bind SpacingWarning, Mode=OneWay}" TextWrapping="Wrap"
+                                                           Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
                                             </Grid>
 
                                             <TextBox Header="Question" Text="{x:Bind Prompt, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
