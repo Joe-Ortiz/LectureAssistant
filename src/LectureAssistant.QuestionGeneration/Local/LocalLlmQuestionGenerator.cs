@@ -85,11 +85,12 @@ public sealed class LocalLlmQuestionGenerator : IQuestionGenerator
         var modelParams = CreateModelParams(options);
         progress?.Report("Loading the local model…");
         using var weights = await LoadAsync(modelParams, options, cancellationToken).ConfigureAwait(false);
+        using var context = CreateContext(weights, modelParams, options);
 
         int CountTokens(string text) => weights.Tokenize(text, false, true, Encoding.UTF8).Length;
 
         // Budget: prompt (system + instructions + transcript section) + answer must fit the context.
-        var contextSize = (int)(modelParams.ContextSize ?? (uint)options.ContextSize);
+        var contextSize = (int)context.ContextSize;
         var perQuestion = Math.Max(150, options.MaxTokensPerQuestion);
         var answerBudget = Math.Clamp(contextSize / 4, Math.Min(perQuestion + 200, contextSize / 2), 4096);
         var maxQuestionsPerSection = Math.Max(1, (answerBudget - 200) / perQuestion);
@@ -119,7 +120,7 @@ public sealed class LocalLlmQuestionGenerator : IQuestionGenerator
 
             var section = new TranscriptSection(i + 1, chunks.Count, chunks[i]);
             var prompt = BuildPrompt(weights, request, count, section);
-            var output = await InferAsync(weights, modelParams, prompt, request.AllowedTypes, count, perQuestion, options, cancellationToken)
+            var output = await InferAsync(context, prompt, request.AllowedTypes, count, perQuestion, options, cancellationToken)
                 .ConfigureAwait(false);
 
             var sectionDrafts = QuestionDraftSchema.ParseLenient(output);
@@ -157,9 +158,12 @@ public sealed class LocalLlmQuestionGenerator : IQuestionGenerator
         return PromptTemplateTransformer.ToModelPrompt(template);
     }
 
+    /// <summary>
+    /// Runs one prompt from an empty context. Equivalent to LLamaSharp's StatelessExecutor, which can't be used
+    /// because it creates its own contexts without checking that creation succeeded (see <see cref="CreateContext"/>).
+    /// </summary>
     private static async Task<string> InferAsync(
-        LLamaWeights weights,
-        ModelParams modelParams,
+        LLamaContext context,
         string prompt,
         IReadOnlyCollection<QuestionType> allowedTypes,
         int count,
@@ -175,18 +179,30 @@ public sealed class LocalLlmQuestionGenerator : IQuestionGenerator
             GrammarOptimization = DefaultSamplingPipeline.GrammarOptimizationMode.Extended,
             Seed = options.Seed ?? (uint)Random.Shared.Next(),
         };
-        var inferenceParams = new InferenceParams
-        {
-            MaxTokens = count * perQuestion + 200,
-            SamplingPipeline = sampling,
-        };
-
-        var executor = new StatelessExecutor(weights, modelParams) { ApplyTemplate = false };
-        var sb = new StringBuilder();
+        var maxTokens = count * perQuestion + 200;
+        var contextSize = (int)context.ContextSize;
+        var decoder = new StreamingTokenDecoder(context);
+        var batch = new LLamaBatch();
         try
         {
-            await foreach (var piece in executor.InferAsync(prompt, inferenceParams, cancellationToken).ConfigureAwait(false))
-                sb.Append(piece);
+            context.NativeHandle.MemoryClear();
+            var tokens = context.Tokenize(prompt, addBos: true, special: true).ToList();
+            var (result, _, past) = await context.DecodeAsync(tokens, LLamaSeqId.Zero, batch, 0, cancellationToken).ConfigureAwait(false);
+            if (result != DecodeResult.Ok) throw new LLamaDecodeError(result);
+
+            for (int i = 0; i < maxTokens; i++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var token = sampling.Sample(context.NativeHandle, batch.TokenCount - 1);
+                if (token.IsEndOfGeneration(context.Vocab)) break;
+                decoder.Add(token);
+
+                if (past + 1 >= contextSize) throw new ContextOverflowException();
+                batch.Clear();
+                batch.Add(token, past++, LLamaSeqId.Zero, true);
+                result = await context.DecodeAsync(batch, cancellationToken).ConfigureAwait(false);
+                if (result != DecodeResult.Ok) throw new LLamaDecodeError(result);
+            }
         }
         catch (ContextOverflowException ex)
         {
@@ -198,11 +214,74 @@ public sealed class LocalLlmQuestionGenerator : IQuestionGenerator
             throw new QuestionGenerationException(QuestionGenerationFailure.Other,
                 "The local model stopped with an error: " + ex.Message, ex);
         }
-        finally
+        return decoder.Read();
+    }
+
+    /// <summary>
+    /// Creates the context (KV cache and compute buffers) for the loaded model, using the largest context size
+    /// from <see cref="ContextSizesToTry"/> that fits in the device's free memory.
+    /// </summary>
+    /// <remarks>
+    /// llama.cpp returns a null context when it can't allocate the KV cache (e.g. out of video memory), and
+    /// LLamaSharp 0.27 doesn't check for that: <c>SafeLLamaContextHandle.Create</c> tests the P/Invoke result for
+    /// null, but the marshaller always returns a handle object (wrapping a null pointer), so no exception is
+    /// thrown and the next native call on it crashes the process with an access violation. Hence the explicit
+    /// <see cref="System.Runtime.InteropServices.SafeHandle.IsInvalid"/> check here.
+    /// A smaller context on the GPU is much faster than the CPU fallback; it only means more transcript sections.
+    /// </remarks>
+    private static LLamaContext CreateContext(LLamaWeights weights, ModelParams modelParams, LocalLlmOptions options)
+    {
+        var requested = (int)(modelParams.ContextSize ?? (uint)options.ContextSize);
+        Exception? lastError = null;
+        foreach (var size in ContextSizesToTry(requested, weights.ContextSize))
         {
-            executor.Context?.Dispose();
+            modelParams.ContextSize = (uint)size;
+            LLamaContext context;
+            try
+            {
+                context = weights.CreateContext(modelParams);
+            }
+            catch (RuntimeError ex)
+            {
+                // A later LLamaSharp that checks the handle itself would throw here instead.
+                lastError = ex;
+                continue;
+            }
+            if (!context.NativeHandle.IsInvalid) return context;
+
+            // Create() took a reference on the model before the handle turned out to be invalid, and SafeHandle
+            // never runs ReleaseHandle for an invalid handle, so Dispose won't give it back. Without this the
+            // weights would stay in (video) memory until the app closes, even after LLamaWeights.Dispose.
+            context.Dispose();
+            weights.NativeHandle.DangerousRelease();
         }
-        return sb.ToString();
+
+        throw new QuestionGenerationException(QuestionGenerationFailure.ModelLoadFailed,
+            options.GpuLayerCount > 0
+                ? "The graphics card doesn't have enough free memory for the local model."
+                : "This PC doesn't have enough free memory to run the local model. Close other programs and try again, lower the context size in Settings, or use Claude.",
+            lastError);
+    }
+
+    /// <summary>Smallest context size worth retrying with when the requested one doesn't fit in memory.</summary>
+    internal const int MinimumFallbackContextSize = 8192;
+
+    /// <summary>
+    /// Context sizes to attempt, largest first: the requested size (capped at what the model was trained for,
+    /// since more can't help), then halving down to <see cref="MinimumFallbackContextSize"/>. A request already
+    /// at or below the minimum is tried as-is only.
+    /// </summary>
+    /// <param name="trainedContextSize">The model's training context, or 0 or less if unknown.</param>
+    internal static IReadOnlyList<int> ContextSizesToTry(int requested, int trainedContextSize)
+    {
+        var size = trainedContextSize > 0 ? Math.Min(requested, Math.Max(trainedContextSize, MinimumFallbackContextSize)) : requested;
+        var sizes = new List<int> { size };
+        while (size > MinimumFallbackContextSize)
+        {
+            size = Math.Max(MinimumFallbackContextSize, size / 2);
+            sizes.Add(size);
+        }
+        return sizes;
     }
 
     private static int SpacingCapacity(double durationSeconds, TimeSpan spacing) =>
