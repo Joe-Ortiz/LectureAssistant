@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Anthropic;
 using Anthropic.Exceptions;
+using Anthropic.Helpers;
 using Anthropic.Models.Beta.Messages;
 using LectureAssistant.Core;
 using LectureAssistant.Core.Models;
@@ -10,7 +11,8 @@ namespace LectureAssistant.QuestionGeneration.Claude;
 /// <summary>
 /// Generates questions with Claude using the instructor's own API key. The whole transcript is sent in one
 /// request (a 75-minute lecture is ~12-20k tokens) and the answer is constrained to
-/// <see cref="QuestionDraftSchema"/> with structured outputs.
+/// <see cref="QuestionDraftSchema"/> with structured outputs. The answer is streamed so progress can follow the
+/// questions as they're written.
 /// </summary>
 public sealed class ClaudeQuestionGenerator : IQuestionGenerator
 {
@@ -33,29 +35,42 @@ public sealed class ClaudeQuestionGenerator : IQuestionGenerator
 
     public async Task<IReadOnlyList<Question>> GenerateAsync(
         QuestionGenerationRequest request,
-        IProgress<string>? progress,
+        IProgress<QuestionGenerationProgress>? progress,
         CancellationToken cancellationToken)
     {
         QuestionPrompt.EnsureUsable(request);
         var options = _options();
         using var client = CreateClient(options);
 
-        progress?.Report("Sending the transcript to Claude…");
+        progress?.Report(new("Sending the transcript to Claude…", null));
         var parameters = BuildParameters(request, options);
 
-        progress?.Report("Claude is reading the lecture and writing questions. This can take a few minutes…");
         BetaMessage response;
-        try
+        for (int attempt = 0; ; attempt++)
         {
-            response = await client.Beta.Messages.Create(parameters, cancellationToken).ConfigureAwait(false);
-        }
-        catch (Exception ex) when (Translate(ex, cancellationToken) is { } friendly)
-        {
-            throw friendly;
+            bool started = false;
+            try
+            {
+                // Streamed so questions can be counted as they're written. The SDK retries failures before the
+                // stream starts; a stream cut off partway is retried here, from the beginning.
+                var events = client.Beta.Messages.CreateStreaming(parameters, cancellationToken);
+                response = await ReadStreamAsync(events, request.QuestionCount, progress, () => started = true, cancellationToken)
+                    .ConfigureAwait(false);
+                break;
+            }
+            catch (Exception ex) when (
+                started && attempt < options.MaxRetries && IsInterruption(ex) && !cancellationToken.IsCancellationRequested)
+            {
+                progress?.Report(new("The connection to Claude was interrupted. Trying again…", null));
+            }
+            catch (Exception ex) when (Translate(ex, cancellationToken) is { } friendly)
+            {
+                throw friendly;
+            }
         }
 
         var json = ReadJson(response);
-        progress?.Report("Checking the questions…");
+        progress?.Report(new("Checking the questions…", 1));
 
         QuestionDraftSet drafts;
         try
@@ -73,9 +88,55 @@ public sealed class ClaudeQuestionGenerator : IQuestionGenerator
             throw new QuestionGenerationException(QuestionGenerationFailure.InvalidResponse,
                 "Claude didn't return any usable questions for this lecture. Try again, or adjust the question types or guidance.");
 
-        progress?.Report($"Generated {questions.Count} question{(questions.Count == 1 ? "" : "s")}.");
+        progress?.Report(new($"Generated {questions.Count} question{(questions.Count == 1 ? "" : "s")}.", 1));
         return questions;
     }
+
+    /// <summary>Typical size of one question in the JSON, in characters, until the first one is measured.</summary>
+    internal const int CharactersPerQuestionGuess = 1000;
+
+    /// <summary>
+    /// Reads the streamed answer into a whole message (as the non-streaming call would return) while reporting
+    /// progress. Claude thinks first, for an unknowable time, so the bar is indeterminate until the answer's text
+    /// starts; from then on it follows the questions completed in the streamed JSON.
+    /// </summary>
+    internal static async Task<BetaMessage> ReadStreamAsync(
+        IAsyncEnumerable<BetaRawMessageStreamEvent> events,
+        int questionCount,
+        IProgress<QuestionGenerationProgress>? progress,
+        Action? onEvent,
+        CancellationToken cancellationToken,
+        TimeProvider? time = null)
+    {
+        using var tracker = new QuestionProgressTracker(progress, CharactersPerQuestionGuess, time);
+        var aggregator = new BetaMessageContentAggregator();
+        bool started = false, writing = false;
+        await foreach (var e in events.CollectAsync(aggregator).WithCancellation(cancellationToken).ConfigureAwait(false))
+        {
+            onEvent?.Invoke();
+            if (!started)
+            {
+                started = true;
+                tracker.ReportIndeterminate("Claude is reading the lecture and planning questions. This can take a few minutes…");
+            }
+            if (e.TryPickContentBlockDelta(out var block) && block.Delta.TryPickText(out var text) && text.Text.Length > 0)
+            {
+                if (!writing)
+                {
+                    writing = true;
+                    tracker.Plan([new PlannedPart(questionCount)]);
+                    tracker.BeginPart(0, TimeSpan.Zero);
+                }
+                tracker.OnOutput(text.Text, text.Text.Length);
+            }
+        }
+        if (writing) tracker.EndPart();
+        return aggregator.Message();
+    }
+
+    /// <summary>The stream broke after it started: an error event mid-answer, or the connection dropped.</summary>
+    private static bool IsInterruption(Exception ex) =>
+        ex is AnthropicSseException or AnthropicIOException or HttpRequestException or IOException;
 
     /// <summary>
     /// Cheap check for the settings page: lists models with the key. Returns null when the key works,
@@ -179,7 +240,9 @@ public sealed class ClaudeQuestionGenerator : IQuestionGenerator
                 "Your Anthropic account is out of credits. Add credits in the Anthropic Console (Plans & Billing) and try again.", ex),
             AnthropicApiException api when IsStatus(api, 529) => new(QuestionGenerationFailure.ServiceUnavailable,
                 "Claude is temporarily overloaded. Please try again in a few minutes.", ex),
-            AnthropicIOException or HttpRequestException => new(QuestionGenerationFailure.Network,
+            AnthropicSseException => new(QuestionGenerationFailure.ServiceUnavailable,
+                "Claude stopped partway through its answer (the service may be busy). Please try again in a few minutes.", ex),
+            AnthropicIOException or HttpRequestException or IOException => new(QuestionGenerationFailure.Network,
                 "Couldn't reach Anthropic. Check your internet connection (and any proxy or firewall) and try again.", ex),
             TaskCanceledException or TimeoutException => new(QuestionGenerationFailure.Network,
                 "The request to Claude timed out. Check your connection and try again; long lectures can take several minutes.", ex),

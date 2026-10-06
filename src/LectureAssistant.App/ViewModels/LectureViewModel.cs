@@ -330,8 +330,25 @@ public sealed partial class LectureViewModel(
                 InstructorGuidance = string.IsNullOrWhiteSpace(Guidance) ? null : Guidance.Trim(),
             };
 
-            var generationProgress = new Progress<string>(s => BusyText = s);
-            var generated = await Task.Run(() => generator.GenerateAsync(request, generationProgress, ct), ct);
+            // Created here, on the UI thread, so reports are marshalled back to it. The generators throttle them.
+            bool finished = false;
+            var generationProgress = new Progress<QuestionGenerationProgress>(p =>
+            {
+                if (finished) return; // a report still queued when generation ended
+                BusyText = p.Message;
+                LiveText = p.TimeLeft ?? "";
+                if (p.Fraction is { } fraction) Progress = fraction * 100;
+                ProgressIndeterminate = p.Fraction is null;
+            });
+            IReadOnlyList<Question> generated;
+            try
+            {
+                generated = await Task.Run(() => generator.GenerateAsync(request, generationProgress, ct), ct);
+            }
+            finally
+            {
+                finished = true;
+            }
             if (generator is IDisposable disposable) disposable.Dispose();
 
             var keep = ReplaceExistingQuestions ? [] : Questions.Select(q => q.ToModel()).ToList();
