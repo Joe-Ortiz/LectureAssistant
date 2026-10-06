@@ -4,6 +4,8 @@ A Windows desktop app (Microsoft Store, .NET 10 + WinUI 3) that helps instructor
 
 1. **Import** a lecture video.
 2. **Captions** are generated on the instructor's PC with Whisper, then reviewed and edited in the app.
+   - The instructor picks a **subject area** (remembered for the next lecture). Each subject has an example sentence full of correctly spelled terms that Whisper reads as preceding context, followed by terms from the instructor's **personal dictionary** (most recently used first, kept within Whisper's prompt limit). See `SubjectAreas.cs` and `RecognitionPrompt.cs`.
+   - **Fix misheard words** lists words to check: words Whisper gave low confidence (from its per-token probabilities), then names, terms and acronyms. Each can be replaced everywhere at once and remembered. Remembered fixes (e.g. "cooper netties" → "Kubernetes") are applied automatically to future lectures. The dictionary is stored in `dictionary.json` in the app's data folder and managed in Settings.
 3. **Questions** are suggested from the timestamped transcript by an AI model the app downloads and runs on the PC. Instructors can choose Claude with their own API key instead. The questions are then reviewed and edited on the video timeline.
 4. **Publish**: the instructor uploads the video to YouTube (unlisted) with the caption file, pastes the link, and exports:
    - a **SCORM 1.2 package** for Canvas, Moodle, Blackboard or D2L. The LMS identifies the student and records the score in the gradebook; no server needed.
@@ -67,4 +69,4 @@ To debug the packaged app, open `LectureAssistant.slnx` in Visual Studio 2026 wi
 - YouTube Data API: upload the video and captions from the app (after Google verification and audit).
 - LTI 1.3 tool (hosted) with Deep Linking and Assignment and Grade Services, for a smoother Canvas experience than SCORM.
 - Optional hosted question-generation backend with a Store subscription, for instructors without an API key.
-- Caption editor features: split/merge cues, find and replace across the transcript.
+- Caption editor features: split/merge cues.

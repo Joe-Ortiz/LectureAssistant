@@ -10,6 +10,7 @@ public static class AppPaths
     public static string LocalModels => Path.Combine(DataRoot, "Models", "llm");
     public static string Previews => Path.Combine(DataRoot, "Previews");
     public static string SettingsFile => Path.Combine(DataRoot, "settings.json");
+    public static string DictionaryFile => Path.Combine(DataRoot, "dictionary.json");
 
     private static string ResolveDataRoot()
     {

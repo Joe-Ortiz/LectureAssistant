@@ -139,6 +139,43 @@
                 </StackPanel>
             </Border>
 
+            <!-- Personal dictionary -->
+            <Border Style="{StaticResource CardStyle}">
+                <StackPanel Spacing="12">
+                    <TextBlock Text="My dictionary" Style="{StaticResource SubtitleTextBlockStyle}" />
+                    <TextBlock TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                               Text="Names and terms from your teaching. Captions use these spellings in every lecture, and words you've fixed before are fixed automatically. When you fix a word in a lecture, check &quot;Remember in my dictionary&quot; to add it here." />
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <TextBox PlaceholderText="e.g. Kubernetes, Dr. Okonkwo" Width="320" AutomationProperties.Name="Name or term to add"
+                                 Text="{x:Bind ViewModel.NewTerm, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                        <Button Content="Add" Command="{x:Bind ViewModel.AddTermCommand}" />
+                    </StackPanel>
+                    <TextBlock Visibility="{x:Bind ViewModel.HasNoDictionaryEntries, Mode=OneWay}" TextWrapping="Wrap"
+                               Foreground="{ThemeResource TextFillColorTertiaryBrush}" Text="Your dictionary is empty." />
+                    <ListView ItemsSource="{x:Bind ViewModel.DictionaryEntries}" SelectionMode="None" MaxHeight="360">
+                        <ListView.ItemTemplate>
+                            <DataTemplate x:DataType="vm:DictionaryEntryViewModel">
+                                <Grid ColumnSpacing="8" Padding="0,4">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
+                                    <StackPanel VerticalAlignment="Center">
+                                        <TextBlock Text="{x:Bind Term}" TextWrapping="Wrap" />
+                                        <TextBlock Text="{x:Bind Detail}" Visibility="{x:Bind HasDetail}" TextWrapping="Wrap"
+                                                   Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" />
+                                    </StackPanel>
+                                    <Button Grid.Column="1" Command="{x:Bind RemoveCommand}" VerticalAlignment="Center"
+                                            ToolTipService.ToolTip="Remove from dictionary" AutomationProperties.Name="Remove from dictionary">
+                                        <SymbolIcon Symbol="Delete" />
+                                    </Button>
+                                </Grid>
+                            </DataTemplate>
+                        </ListView.ItemTemplate>
+                    </ListView>
+                </StackPanel>
+            </Border>
+
             <TextBlock Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorTertiaryBrush}" TextWrapping="Wrap">
                 <Run Text="Data folder: " /><Run x:Name="DataFolderRun" />
             </TextBlock>
