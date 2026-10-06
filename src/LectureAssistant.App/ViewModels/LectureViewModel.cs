@@ -5,6 +5,7 @@ using LectureAssistant.App.Helpers;
 using LectureAssistant.App.Services;
 using LectureAssistant.Core;
 using LectureAssistant.Core.Captions;
+using LectureAssistant.Core.Hardware;
 using LectureAssistant.Core.Models;
 using LectureAssistant.Core.Persistence;
 using LectureAssistant.Core.YouTube;
@@ -222,12 +223,14 @@ public sealed partial class LectureViewModel(
                     if (p.LatestSegment is { } s) LiveText = $"[{TimeText.Format(s.Start)}] {s.Text}";
                 });
                 var segments = await Task.Run(() => transcriber.TranscribeAsync(wavPath, options, transcriptionProgress, ct), ct);
+                var ranOn = RememberRun(transcriber, model.DisplayName.Split(" (")[0] + " speech model", run => settings.Current.LastTranscriptionRun = run);
 
                 ReplaceCaptions(segments);
                 CaptionsReplaced?.Invoke();
                 _dirty = true;
                 await SaveIfDirtyAsync();
                 SuccessMessage = $"Created {segments.Count} captions. Review names and technical terms before publishing.";
+                if (ranOn.Length > 0) SuccessMessage += $" Transcribed {ranOn}.";
             }
             finally
             {
@@ -321,6 +324,8 @@ public sealed partial class LectureViewModel(
 
             ProgressIndeterminate = true;
             var generator = questionGenerators.Create();
+            if (generator is QuestionGeneration.Local.LocalLlmQuestionGenerator local)
+                local.DeviceProgress = new Progress<ComputeDeviceReport>(device => LiveText = device.StatusText);
             var request = new QuestionGenerationRequest
             {
                 Transcript = Captions.Select(c => c.ToModel()).ToList(),
@@ -333,6 +338,10 @@ public sealed partial class LectureViewModel(
             var generationProgress = new Progress<string>(s => BusyText = s);
             var generated = await Task.Run(() => generator.GenerateAsync(request, generationProgress, ct), ct);
             if (generator is IDisposable disposable) disposable.Dispose();
+            var modelName = questionGenerators.SelectedLocalModel is { } builtIn
+                ? builtIn.DisplayName + " model"
+                : Path.GetFileName(settings.Current.LocalModelPath);
+            var ranOn = RememberRun(generator, modelName, run => settings.Current.LastQuestionRun = run);
 
             var keep = ReplaceExistingQuestions ? [] : Questions.Select(q => q.ToModel()).ToList();
             ReplaceQuestions(keep.Concat(generated).OrderBy(q => q.Timestamp));
@@ -346,7 +355,20 @@ public sealed partial class LectureViewModel(
                     "there wasn't room for more without interrupting students too often). Review each one; you're the expert.",
                 _ => $"Added {generated.Count} suggested questions. Review each one; you're the expert.",
             };
+            if (ranOn.Length > 0) SuccessMessage += $" Written {ranOn}.";
         });
+    }
+
+    /// <summary>
+    /// Remembers where a local model ran (graphics card or processor) for Settings, and returns
+    /// "on your graphics card (…) in 34 seconds" for the success message, or "" when it isn't known.
+    /// </summary>
+    private string RememberRun(object model, string? modelName, Action<ModelRun> store)
+    {
+        if (model is not IReportsModelRun { LastRun: { } run }) return "";
+        store(run with { ModelName = modelName });
+        settings.Save();
+        return run.Where.Device == ComputeDevice.Unknown ? "" : $"on {run.Where.Describe()} in {ModelRun.FormatDuration(run.Duration)}";
     }
 
     /// <summary>Downloads through the app-wide service (so Settings shows the same progress), mirrored in this page's status panel.</summary>

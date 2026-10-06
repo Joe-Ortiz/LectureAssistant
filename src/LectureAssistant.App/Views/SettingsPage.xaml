@@ -46,8 +46,6 @@
                                 </RadioButtons.ItemTemplate>
                             </RadioButtons>
 
-                            <TextBlock Text="{x:Bind ViewModel.HardwareText}" Style="{StaticResource CaptionTextBlockStyle}"
-                                       Foreground="{ThemeResource TextFillColorTertiaryBrush}" />
                             <InfoBar Severity="Warning" IsClosable="False" IsOpen="{x:Bind ViewModel.HasSelectedModelWarning, Mode=OneWay}"
                                      Message="{x:Bind ViewModel.SelectedModelWarning, Mode=OneWay}" />
 
@@ -66,6 +64,16 @@
                                        AutomationProperties.LiveSetting="Polite" />
                             <TextBlock Text="{x:Bind ViewModel.Downloads.Error, Mode=OneWay}" TextWrapping="Wrap"
                                        Foreground="{ThemeResource SystemFillColorCriticalBrush}" />
+                        </StackPanel>
+
+                        <!-- Where it runs: graphics card (video memory) or processor (system memory) -->
+                        <StackPanel Spacing="4">
+                            <TextBlock Text="{x:Bind ViewModel.HardwareText}" Style="{StaticResource CaptionTextBlockStyle}"
+                                       Foreground="{ThemeResource TextFillColorTertiaryBrush}" TextWrapping="Wrap" />
+                            <TextBlock Text="{x:Bind ViewModel.QuestionDeviceText, Mode=OneWay}" TextWrapping="Wrap" />
+                            <TextBlock Text="{x:Bind ViewModel.LastQuestionRunText}" Style="{StaticResource CaptionTextBlockStyle}" TextWrapping="Wrap"
+                                       Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                       Visibility="{x:Bind ViewModel.HasLastQuestionRun}" />
                         </StackPanel>
 
                         <Expander Header="Advanced" HorizontalAlignment="Stretch" HorizontalContentAlignment="Left">
@@ -125,6 +133,12 @@
                             </DataTemplate>
                         </RadioButtons.ItemTemplate>
                     </RadioButtons>
+                    <StackPanel Spacing="4">
+                        <TextBlock Text="{x:Bind ViewModel.SpeechDeviceText}" TextWrapping="Wrap" />
+                        <TextBlock Text="{x:Bind ViewModel.LastTranscriptionRunText}" Style="{StaticResource CaptionTextBlockStyle}" TextWrapping="Wrap"
+                                   Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                   Visibility="{x:Bind ViewModel.HasLastTranscriptionRun}" />
+                    </StackPanel>
                     <StackPanel Orientation="Horizontal" Spacing="8">
                         <Button Content="Download selected model now" Command="{x:Bind ViewModel.DownloadWhisperModelCommand}" />
                         <Button Content="Cancel" Command="{x:Bind ViewModel.CancelWhisperDownloadCommand}"

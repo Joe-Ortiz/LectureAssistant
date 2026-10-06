@@ -3,6 +3,7 @@ using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using LectureAssistant.App.Services;
 using LectureAssistant.Core.Downloads;
+using LectureAssistant.Core.Hardware;
 using LectureAssistant.QuestionGeneration.Local;
 using LectureAssistant.Transcription;
 
@@ -83,6 +84,14 @@ public sealed partial class SettingsViewModel : ObservableObject
     public string LocalModelText => LocalModelPath ?? "No file chosen";
     public string HardwareText { get; }
 
+    // Where the models run: forecast from the hardware, and what actually happened last time.
+    [ObservableProperty] public partial string QuestionDeviceText { get; set; } = "";
+    public string LastQuestionRunText { get; }
+    public bool HasLastQuestionRun => LastQuestionRunText.Length > 0;
+    public string SpeechDeviceText { get; }
+    public string LastTranscriptionRunText { get; }
+    public bool HasLastTranscriptionRun => LastTranscriptionRunText.Length > 0;
+
     private LocalModelInfo? SelectedLocalModel =>
         SelectedLocalModelIndex >= 0 && SelectedLocalModelIndex < LocalModelOptions.Count ? LocalModelOptions[SelectedLocalModelIndex].Info : null;
 
@@ -109,7 +118,10 @@ public sealed partial class SettingsViewModel : ObservableObject
         foreach (var model in LocalModelCatalog.All) LocalModelOptions.Add(new LocalModelOption(model, model == recommended));
         var selected = LocalModelCatalog.Find(current.LocalModelId) ?? recommended;
         SelectedLocalModelIndex = LocalModelOptions.ToList().FindIndex(o => o.Info == selected);
-        HardwareText = DescribeHardware(hardware);
+        HardwareText = DeviceForecasts.DescribeHardware(hardware);
+        SpeechDeviceText = DeviceForecasts.ForSpeechModel(hardware).Text;
+        LastQuestionRunText = DescribeLastRun(current.LastQuestionRun);
+        LastTranscriptionRunText = DescribeLastRun(current.LastTranscriptionRun);
 
         ProviderIndex = current.QuestionProvider == QuestionProvider.Claude ? ClaudeIndex : LocalIndex;
         UseCustomLocalModel = current.UseCustomLocalModel;
@@ -121,6 +133,7 @@ public sealed partial class SettingsViewModel : ObservableObject
         DefaultQuestionCount = current.DefaultQuestionCount;
 
         RefreshLocalModelStatus();
+        RefreshQuestionDevice();
         downloads.PropertyChanged += OnDownloadsChanged;
         downloads.ModelChanged += OnModelChanged;
 
@@ -158,6 +171,9 @@ public sealed partial class SettingsViewModel : ObservableObject
             case nameof(SelectedModelWarning): OnPropertyChanged(nameof(HasSelectedModelWarning)); break;
             case nameof(ApiKey): ApiKeyStatus = ""; break;
         }
+
+        if (e.PropertyName is nameof(SelectedLocalModelIndex) or nameof(UseCustomLocalModel) or nameof(LocalModelPath) or nameof(LocalGpuLayers))
+            RefreshQuestionDevice();
 
         if (_initialized && e.PropertyName is nameof(SelectedWhisperIndex) or nameof(TranscriptionLanguage) or nameof(ProviderIndex)
             or nameof(SelectedLocalModelIndex) or nameof(UseCustomLocalModel) or nameof(LocalModelPath) or nameof(LocalGpuLayers)
@@ -203,13 +219,24 @@ public sealed partial class SettingsViewModel : ObservableObject
         OnPropertyChanged(nameof(CanDownloadSelected));
     }
 
-    private static string DescribeHardware(HardwareProfile hardware)
+    /// <summary>Graphics card or processor for the selected question model, given this PC and the GPU layers setting.</summary>
+    private void RefreshQuestionDevice()
     {
-        var text = $"This PC: {Math.Round(hardware.SystemMemoryBytes / 1073741824.0)} GB memory";
-        if (hardware.GpuMemoryBytes >= 1_000_000_000)
-            text += $", {HardwareProbe.GpuName ?? "graphics card"} ({Math.Round(hardware.GpuMemoryBytes / 1073741824.0)} GB)";
-        return text + ".";
+        var hardware = HardwareProbe.Profile;
+        var gpuLayers = double.IsNaN(LocalGpuLayers) ? -1 : (int)LocalGpuLayers;
+        if (UseCustomLocalModel)
+        {
+            QuestionDeviceText = LocalModelPath is { } path && File.Exists(path)
+                ? DeviceForecasts.ForCustomQuestionModel(hardware, new FileInfo(path).Length, gpuLayers).Text
+                : "";
+        }
+        else
+        {
+            QuestionDeviceText = SelectedLocalModel is { } model ? DeviceForecasts.ForQuestionModel(hardware, model, gpuLayers).Text : "";
+        }
     }
+
+    private static string DescribeLastRun(ModelRun? run) => run is null ? "" : $"Last run: {run.Describe()}.";
 
     [RelayCommand]
     private async Task DownloadLocalModelAsync()
