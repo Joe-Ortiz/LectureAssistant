@@ -62,6 +62,24 @@ public sealed class ScormPreviewTests : IDisposable
     }
 
     [Fact]
+    public async Task Preview_scores_retries_like_the_exported_package()
+    {
+        // The simulated gradebook shows whatever the real player reports, so it only needs the same rules.
+        var project = TestData.Project();
+        project.Quiz.AttemptsAllowed = 2;
+        project.Quiz.RetryScoring = RetryScoring.ReducedCredit;
+        project.Questions[0].RetryScoring = RetryScoring.FullCredit;
+        await ScormPreview.WriteAsync(project, _folder, null, default);
+
+        var first = ReadData().GetProperty("questions")[0];
+        Assert.Equal(2, first.GetProperty("attemptsAllowed").GetInt32());
+        Assert.Equal("FullCredit", first.GetProperty("retryScoring").GetString());
+        Assert.Equal(
+            File.ReadAllText(Path.Combine(_folder, "lecture-data.js")),
+            LectureDataScript.Build(project));
+    }
+
+    [Fact]
     public async Task Replaces_a_previous_preview()
     {
         Directory.CreateDirectory(_folder);
