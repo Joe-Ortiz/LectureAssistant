@@ -15,7 +15,8 @@ public static partial class QuestionPostProcessor
 
     private const int MaxExcerptLength = 400;
 
-    public static IReadOnlyList<Question> Process(IEnumerable<QuestionDraft> drafts, QuestionGenerationRequest request)
+    /// <param name="random">Shuffles multiple-choice options; pass a seeded one for repeatable output.</param>
+    public static IReadOnlyList<Question> Process(IEnumerable<QuestionDraft> drafts, QuestionGenerationRequest request, Random? random = null)
     {
         var segments = Timeline.From(request.Transcript);
         if (segments.Count == 0 || request.QuestionCount <= 0) return [];
@@ -57,7 +58,9 @@ public static partial class QuestionPostProcessor
             spaced.Add(q);
         }
 
-        return SpreadTrim(spaced, request.QuestionCount);
+        var result = SpreadTrim(spaced, request.QuestionCount);
+        ShuffleOptions(result, random ?? Random.Shared);
+        return result;
     }
 
     /// <summary>How far a question may be pushed later to keep questions apart.</summary>
@@ -101,8 +104,14 @@ public static partial class QuestionPostProcessor
                 break;
 
             case QuestionType.TrueFalse:
-                question.CorrectAnswer = draft.CorrectAnswer ?? false;
-                if (draft.CorrectAnswer is null) question.Prompt = ""; // no answer given: invalid
+                if (draft.CorrectAnswer is not { } answer)
+                {
+                    question.Prompt = ""; // no answer given: invalid
+                    break;
+                }
+                // The explanation is written first and holds the reasoning; if it clearly concludes the
+                // opposite of the answer that followed, the answer is the slip.
+                question.CorrectAnswer = StatedVerdict(question.Explanation) ?? answer;
                 break;
 
             case QuestionType.FillInTheBlank:
@@ -115,6 +124,59 @@ public static partial class QuestionPostProcessor
                 break;
         }
         return question;
+    }
+
+    /// <summary>
+    /// The true/false verdict a model's explanation clearly states ("False. …", "This statement is true because …",
+    /// "… So the statement is false."), or null when it states none or contradicts itself. Deliberately narrow:
+    /// anything hedged or ambiguous is left to the model's answer.
+    /// </summary>
+    internal static bool? StatedVerdict(string? explanation)
+    {
+        if (string.IsNullOrWhiteSpace(explanation)) return null;
+        var opening = Verdict(OpeningVerdict().Match(explanation));
+        var closing = Verdict(ClosingVerdict().Match(explanation));
+        if (opening is not null && closing is not null && opening != closing) return null;
+        return opening ?? closing;
+
+        static bool? Verdict(Match m) =>
+            m.Success ? m.Groups["v"].Value.ToLowerInvariant() is "true" or "correct" : null;
+    }
+
+    /// <summary>
+    /// Models tend to write the correct option first. Shuffles each multiple-choice question's options (feedback
+    /// stays with its option) and moves a single correct option to the slot used least so far among questions
+    /// with as many options, ties broken at random: a shuffled round-robin, so the answer isn't in the same
+    /// place for most questions. Options that refer to others by position ("all of the above") keep their slot.
+    /// Only newly generated questions come through here, so the instructor reviews the final order and every
+    /// export uses it.
+    /// </summary>
+    internal static void ShuffleOptions(IEnumerable<Question> questions, Random random)
+    {
+        var uses = new Dictionary<(int Count, int Slot), int>();
+        foreach (var q in questions)
+        {
+            if (q.Type != QuestionType.MultipleChoice) continue;
+            var slots = Enumerable.Range(0, q.Options.Count).Where(i => !RefersToOtherOptions().IsMatch(q.Options[i].Text)).ToArray();
+            if (slots.Length < 2) continue;
+
+            var options = slots.Select(i => q.Options[i]).ToArray();
+            random.Shuffle(options);
+
+            var from = Array.FindIndex(options, o => o.IsCorrect);
+            if (from >= 0 && q.Options.Count(o => o.IsCorrect) == 1)
+            {
+                var count = q.Options.Count;
+                var fewest = slots.Min(s => uses.GetValueOrDefault((count, s)));
+                var candidates = Array.FindAll(slots, s => uses.GetValueOrDefault((count, s)) == fewest);
+                var target = candidates[random.Next(candidates.Length)];
+                var to = Array.IndexOf(slots, target);
+                (options[from], options[to]) = (options[to], options[from]);
+                uses[(count, target)] = fewest + 1;
+            }
+
+            for (int k = 0; k < slots.Length; k++) q.Options[slots[k]] = options[k];
+        }
     }
 
     /// <summary>
@@ -187,6 +249,18 @@ public static partial class QuestionPostProcessor
     /// <summary>A run of 3+ underscores, optionally with spaces between ("_ _ _"), is one blank.</summary>
     [GeneratedRegex(@"_(?:\s?_){2,}")]
     private static partial Regex BlankRun();
+
+    /// <summary>"True." / "Incorrect:" / "This statement is false because" / "This is correct." at the start.</summary>
+    [GeneratedRegex(@"^[\s*""'“]*(?:(?<v>true|false|correct|incorrect)\s*[.!:]|(?:the|this) statement is (?<v>true|false|correct|incorrect)\s*(?:[.!:;]|$|because\b|since\b)|this is (?<v>true|false|correct|incorrect)\s*[.!:])", RegexOptions.IgnoreCase)]
+    private static partial Regex OpeningVerdict();
+
+    /// <summary>"… so the statement is false." / "… This statement is therefore true." / "… so it is true." at the end.</summary>
+    [GeneratedRegex(@"(?<!\b(?:whether|if)\s)\b(?:(?:the|this) statement|so,? (?:it|this)) is (?:therefore |thus |hence )?(?<v>true|false|correct|incorrect)[\s*""'”]*[.!]?[\s*""'”]*$", RegexOptions.IgnoreCase)]
+    private static partial Regex ClosingVerdict();
+
+    /// <summary>Options whose meaning depends on where they sit: "All of the above", "Both A and B", "Option C".</summary>
+    [GeneratedRegex(@"\b(?:all|none|both|neither|any) of the above\b|\b(?:all|none|both|neither) of these\b|\b(?:above|previous|preceding) (?:options?|answers?|choices?)\b|\b(?:options?|answers?|choices?) (?-i:[A-E])\b|^(?:both |only )?(?-i:[A-E]) and (?-i:[A-E])\b", RegexOptions.IgnoreCase)]
+    private static partial Regex RefersToOtherOptions();
 }
 
 /// <summary>Transcript segments cleaned up for placement: non-empty, ordered, End never before Start.</summary>
