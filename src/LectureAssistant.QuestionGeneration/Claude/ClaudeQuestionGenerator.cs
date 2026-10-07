@@ -169,7 +169,8 @@ public sealed class ClaudeQuestionGenerator : IQuestionGenerator
             System = QuestionPrompt.SystemPrompt,
             Messages =
             [
-                new() { Role = Role.User, Content = QuestionPrompt.BuildUserMessage(request, request.QuestionCount) },
+                // Asking for more than fit at the minimum spacing would only push the model to crowd them.
+                new() { Role = Role.User, Content = QuestionPrompt.BuildUserMessage(request, Math.Max(1, Math.Min(request.QuestionCount, QuestionPostProcessor.Capacity(request)))) },
             ],
             Thinking = new BetaThinkingConfigAdaptive(),
             OutputConfig = new BetaOutputConfig

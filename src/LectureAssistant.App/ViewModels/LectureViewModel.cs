@@ -77,6 +77,16 @@ public sealed partial class LectureViewModel(
     [ObservableProperty] public partial bool IncludeFillInTheBlank { get; set; } = true;
     [ObservableProperty] public partial string Guidance { get; set; } = "";
     [ObservableProperty] public partial bool ReplaceExistingQuestions { get; set; }
+    [ObservableProperty] public partial int MinimumSpacingIndex { get; set; } = NearestSpacingIndex(settings.Current.DefaultMinimumQuestionSpacing);
+
+    /// <summary>Choices for "Minimum time between questions".</summary>
+    public static IReadOnlyList<TimeSpan> MinimumSpacingChoices { get; } =
+        [.. new[] { 30, 45, 60, 90, 120, 180, 300 }.Select(s => TimeSpan.FromSeconds(s))];
+    public static IReadOnlyList<string> MinimumSpacingNames { get; } = [.. MinimumSpacingChoices.Select(TimeText.Describe)];
+
+    public TimeSpan MinimumSpacing => MinimumSpacingIndex >= 0 && MinimumSpacingIndex < MinimumSpacingChoices.Count
+        ? MinimumSpacingChoices[MinimumSpacingIndex]
+        : QuizSettings.DefaultMinimumQuestionSpacing;
 
     // Quiz settings
     [ObservableProperty] public partial double PassingScore { get; set; } = 70;
@@ -135,6 +145,7 @@ public sealed partial class LectureViewModel(
             RetryScoringIndex = AttemptChoices.ScoringIndex(_project.Quiz.RetryScoring);
             RetryPenaltyPercent = _project.Quiz.RetryPenaltyPercent;
             ShowCorrectAnswers = _project.Quiz.ShowCorrectAnswers;
+            MinimumSpacingIndex = NearestSpacingIndex(_project.Quiz.MinimumQuestionSpacing ?? settings.Current.DefaultMinimumQuestionSpacing);
             ReplaceCaptions(_project.Captions);
             ReplaceQuestions(_project.Questions);
         }
@@ -161,6 +172,7 @@ public sealed partial class LectureViewModel(
             RetryPenaltyPercent = (int)Math.Clamp(
                 Math.Round(double.IsNaN(RetryPenaltyPercent) ? AttemptRules.DefaultRetryPenaltyPercent : RetryPenaltyPercent), 1, 100),
             ShowCorrectAnswers = ShowCorrectAnswers,
+            MinimumQuestionSpacing = MinimumSpacing,
         };
         return _project;
     }
@@ -200,6 +212,25 @@ public sealed partial class LectureViewModel(
             case nameof(Title) or nameof(PassingScore) or nameof(PreventSkippingAhead) or nameof(AttemptsIndex) or nameof(RetryPenaltyPercent)
                 or nameof(ShowCorrectAnswers):
                 MarkDirty(); break;
+            case nameof(MinimumSpacingIndex): OnMinimumSpacingChanged(); break;
+        }
+    }
+
+    private void OnMinimumSpacingChanged()
+    {
+        OnPropertyChanged(nameof(MinimumSpacing));
+        UpdateSpacingWarnings();
+        if (_loading) return;
+        MarkDirty();
+        // Remembered as the starting value for other lectures.
+        settings.Current.DefaultMinimumQuestionSpacing = MinimumSpacing;
+        try
+        {
+            settings.Save();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Only a convenience for the next lecture; this lecture keeps its own value.
         }
     }
 
@@ -443,6 +474,25 @@ public sealed partial class LectureViewModel(
             return;
         }
 
+        // Kept questions occupy their places on the timeline; new ones keep the minimum time from them too.
+        var request = new QuestionGenerationRequest
+        {
+            Transcript = Captions.Select(c => c.ToModel()).ToList(),
+            LectureTitle = Title,
+            QuestionCount = (int)Math.Clamp(double.IsNaN(QuestionCount) ? 8 : QuestionCount, 1, 50),
+            AllowedTypes = types,
+            InstructorGuidance = string.IsNullOrWhiteSpace(Guidance) ? null : Guidance.Trim(),
+            MinimumSpacing = MinimumSpacing,
+            ReservedTimes = ReplaceExistingQuestions ? [] : Questions.Select(q => q.Timestamp).ToList(),
+        };
+        var room = QuestionGeneration.QuestionPostProcessor.Capacity(request);
+        if (room == 0 && request.ReservedTimes.Count > 0)
+        {
+            ErrorMessage = $"There's no room for more questions: with at least {TimeText.Describe(request.MinimumSpacing)} between questions, " +
+                "the ones you already have fill the lecture. Lower the minimum time between questions, or choose \"Replace existing questions\".";
+            return;
+        }
+
         var modelToDownload = questionGenerators.ModelNeedingDownload();
         if (modelToDownload is not null)
         {
@@ -471,14 +521,6 @@ public sealed partial class LectureViewModel(
             void ShowLiveText() => LiveText = string.Join(" ", new[] { timeLeft.Length > 0 ? timeLeft + "." : "", runningOn }.Where(s => s.Length > 0));
             if (generator is QuestionGeneration.Local.LocalLlmQuestionGenerator local)
                 local.DeviceProgress = new Progress<ComputeDeviceReport>(device => { runningOn = device.StatusText; ShowLiveText(); });
-            var request = new QuestionGenerationRequest
-            {
-                Transcript = Captions.Select(c => c.ToModel()).ToList(),
-                LectureTitle = Title,
-                QuestionCount = (int)Math.Clamp(double.IsNaN(QuestionCount) ? 8 : QuestionCount, 1, 50),
-                AllowedTypes = types,
-                InstructorGuidance = string.IsNullOrWhiteSpace(Guidance) ? null : Guidance.Trim(),
-            };
 
             // Created here, on the UI thread, so reports are marshalled back to it. The generators throttle them.
             bool finished = false;
@@ -510,13 +552,18 @@ public sealed partial class LectureViewModel(
             ReplaceQuestions(keep.Concat(generated).OrderBy(q => q.Timestamp));
             _dirty = true;
             await SaveIfDirtyAsync();
+            var gap = TimeText.Describe(request.MinimumSpacing);
             SuccessMessage = generated.Count switch
             {
                 0 => "No usable questions came back. Try again, or add guidance about what to focus on.",
+                _ when generated.Count < request.QuestionCount && room < request.QuestionCount =>
+                    $"Added {generated.Count} of {request.QuestionCount} questions. With at least {gap} between questions" +
+                    (request.ReservedTimes.Count > 0 ?" (including the ones you already had)" : "") +
+                    ", there wasn't room for more. Lower the minimum time between questions to fit more. Review each one; you're the expert.",
                 _ when generated.Count < request.QuestionCount =>
-                    $"Added {generated.Count} suggested question{(generated.Count == 1 ? "" : "s")} (you asked for {request.QuestionCount}; " +
-                    "there wasn't room for more without interrupting students too often). Review each one; you're the expert.",
-                _ => $"Added {generated.Count} suggested questions. Review each one; you're the expert.",
+                    $"Added {generated.Count} of {request.QuestionCount} questions; the other suggestions weren't usable or were less than {gap} " +
+                    "from another question. Suggest again to try for more. Review each one; you're the expert.",
+                _ => $"Added {generated.Count} suggested question{(generated.Count == 1 ? "" : "s")}. Review each one; you're the expert.",
             };
             if (ranOn.Length > 0) SuccessMessage += $" Written {ranOn}.";
         });
@@ -576,6 +623,7 @@ public sealed partial class LectureViewModel(
         Questions.Insert(index, question);
         OnPropertyChanged(nameof(HasQuestions));
         OnPropertyChanged(nameof(HasNoQuestions));
+        UpdateSpacingWarnings();
         MarkDirty();
     }
 
@@ -591,6 +639,35 @@ public sealed partial class LectureViewModel(
         OnPropertyChanged(nameof(HasQuestions));
         OnPropertyChanged(nameof(HasNoQuestions));
         OnQuestionChanged();
+    }
+
+    /// <summary>A question was edited or removed.</summary>
+    private void OnQuestionChanged()
+    {
+        MarkDirty();
+        UpdateSpacingWarnings();
+        OnPropertyChanged(nameof(ShowRetryPenalty));
+    }
+
+    /// <summary>Flags questions that come sooner than the minimum after the previous one (a warning, not an export blocker).</summary>
+    private void UpdateSpacingWarnings()
+    {
+        TimeSpan? previous = null;
+        foreach (var question in Questions.OrderBy(q => q.Timestamp))
+        {
+            question.UpdateSpacingWarning(question.Timestamp - previous, MinimumSpacing);
+            previous = question.Timestamp;
+        }
+    }
+
+    private static int NearestSpacingIndex(TimeSpan spacing)
+    {
+        int best = 0;
+        for (int i = 1; i < MinimumSpacingChoices.Count; i++)
+        {
+            if ((MinimumSpacingChoices[i] - spacing).Duration() < (MinimumSpacingChoices[best] - spacing).Duration()) best = i;
+        }
+        return best;
     }
 
     // ---------- Publish ----------
@@ -719,13 +796,7 @@ public sealed partial class LectureViewModel(
         foreach (var q in questions) Questions.Add(new QuestionViewModel(q, RemoveQuestion, t => SeekRequested?.Invoke(t), OnQuestionChanged));
         OnPropertyChanged(nameof(HasQuestions));
         OnPropertyChanged(nameof(HasNoQuestions));
-        OnPropertyChanged(nameof(ShowRetryPenalty));
-    }
-
-    /// <summary>A question was edited or removed.</summary>
-    private void OnQuestionChanged()
-    {
-        MarkDirty();
+        UpdateSpacingWarnings();
         OnPropertyChanged(nameof(ShowRetryPenalty));
     }
 }

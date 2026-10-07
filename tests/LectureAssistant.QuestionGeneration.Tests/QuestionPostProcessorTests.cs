@@ -377,12 +377,76 @@ public class QuestionPostProcessorTests
     }
 
     [Fact]
-    public void Spacing_relaxes_for_short_videos_so_the_requested_count_fits()
+    public void Short_videos_get_fewer_questions_rather_than_relaxed_spacing()
     {
-        // 3 minutes, 5 questions requested, 45s preferred: 150 usable seconds / 6 = 25s spacing.
+        // 3 minutes, 5 questions requested 28s apart, 45s minimum: the minimum still applies, so only 3 fit near their material.
         var drafts = Enumerable.Range(0, 5).Select(i => Tf(40 + i * 28, prompt: $"Q{i}")).ToList();
         var result = QuestionPostProcessor.Process(drafts, Request(transcript: Transcript(180), count: 5, spacing: TimeSpan.FromSeconds(45)));
-        Assert.Equal(5, result.Count);
+        Assert.Equal([S(50), S(100), S(150)], result.Select(q => q.Timestamp));
+    }
+
+    [Fact]
+    public void A_one_minute_video_with_a_one_minute_minimum_gets_one_question()
+    {
+        var result = QuestionPostProcessor.Process(
+            [Tf(35, prompt: "A"), Tf(45, prompt: "B"), Tf(55, prompt: "C")],
+            Request(transcript: Transcript(60), count: 3, spacing: TimeSpan.FromSeconds(60)));
+        Assert.Equal("A", Assert.Single(result).Prompt);
+    }
+
+    [Fact]
+    public void New_questions_keep_the_minimum_gap_from_kept_questions()
+    {
+        var request = Request(spacing: TimeSpan.FromSeconds(60)) with { ReservedTimes = [S(120), S(300)] };
+        var result = QuestionPostProcessor.Process([Tf(100, prompt: "A"), Tf(200, prompt: "B"), Tf(330, prompt: "C")], request);
+        // A@110 is 10s before a kept question; the next clear slot (180) is too far from its material: dropped.
+        // B@210 is clear of both. C@340 is 40s after the kept question at 300, so it moves to 360.
+        Assert.Equal(["B", "C"], result.Select(q => q.Prompt));
+        Assert.Equal([S(210), S(360)], result.Select(q => q.Timestamp));
+    }
+
+    [Fact]
+    public void Question_count_is_for_new_questions_only()
+    {
+        var request = Request(count: 2, spacing: TimeSpan.FromSeconds(60)) with { ReservedTimes = [S(60), S(300), S(550)] };
+        var result = QuestionPostProcessor.Process([Tf(150, prompt: "A"), Tf(400, prompt: "B")], request);
+        Assert.Equal(2, result.Count);
+    }
+
+    [Fact]
+    public void Moving_and_trimming_never_bring_questions_closer_than_the_minimum()
+    {
+        var spacings = new[] { 30, 45, 60, 90, 120, 300 };
+        for (int seed = 0; seed < 200; seed++)
+        {
+            var random = new Random(seed);
+            var spacing = S(spacings[random.Next(spacings.Length)]);
+            var transcript = Transcript(random.Next(60, 1200), random.Next(2, 15));
+            var reserved = Enumerable.Range(0, random.Next(0, 4)).Select(_ => S(random.Next(0, 1200))).ToList();
+            var drafts = Enumerable.Range(0, random.Next(1, 25)).Select(i => Tf(random.NextDouble() * 1200, prompt: $"Q{i}")).ToList();
+            var request = Request(transcript, count: random.Next(1, 15), spacing: spacing) with { ReservedTimes = reserved };
+
+            var result = QuestionPostProcessor.Process(drafts, request);
+
+            Assert.True(result.Count <= request.QuestionCount);
+            Assert.True(result.Count <= QuestionPostProcessor.Capacity(request), $"seed {seed}: more questions than fit");
+            for (int i = 1; i < result.Count; i++)
+                Assert.True(result[i].Timestamp - result[i - 1].Timestamp >= spacing, $"seed {seed}: questions {i - 1} and {i} too close");
+            Assert.All(result, q => Assert.All(reserved, r => Assert.True((q.Timestamp - r).Duration() >= spacing, $"seed {seed}: too close to a kept question")));
+        }
+    }
+
+    [Fact]
+    public void Capacity_is_how_many_fit_at_the_minimum_spacing()
+    {
+        // Sentence ends every 10s from 30s (after the lead-in) to 600s: 30, 90, ..., 570.
+        Assert.Equal(10, QuestionPostProcessor.Capacity(Request(spacing: S(60))));
+        Assert.Equal(1, QuestionPostProcessor.Capacity(Request(Transcript(60), spacing: S(60))));
+        // Kept questions at 260 and 350 block 210-400: 30, 90, 150, then 410, 470, 530, 590.
+        Assert.Equal(7, QuestionPostProcessor.Capacity(Request(spacing: S(60)) with { ReservedTimes = [S(260), S(350)] }));
+        Assert.Equal(0, QuestionPostProcessor.Capacity(Request(Transcript(120), spacing: S(60)) with { ReservedTimes = [S(60), S(120)] }));
+        Assert.Equal(int.MaxValue, QuestionPostProcessor.Capacity(Request(spacing: TimeSpan.Zero)));
+        Assert.Equal(0, QuestionPostProcessor.Capacity(Request(transcript: [], spacing: S(60))));
     }
 
     [Fact]
@@ -417,6 +481,16 @@ public class QuestionPostProcessorTests
         var drafts = Enumerable.Range(0, 10).Select(i => Tf(50 + i * 50, prompt: $"Q{i}")).ToList();
         var result = QuestionPostProcessor.Process(drafts, Request(count: 4));
         Assert.Equal(["Q0", "Q3", "Q6", "Q9"], result.Select(q => q.Prompt));
+    }
+
+    [Fact]
+    public void Trimming_spreads_by_time_when_candidates_are_bunched()
+    {
+        // Four early, one in the middle, four late. Picking by list position would skip the middle one.
+        var times = new[] { 50, 60, 70, 80, 300, 520, 530, 540, 550 };
+        var drafts = times.Select(t => Tf(t - 5, prompt: $"Q{t}")).ToList();
+        var result = QuestionPostProcessor.Process(drafts, Request(count: 4));
+        Assert.Equal([S(50), S(300), S(520), S(550)], result.Select(q => q.Timestamp));
     }
 
     [Fact]

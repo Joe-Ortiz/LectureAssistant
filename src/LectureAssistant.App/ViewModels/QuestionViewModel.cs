@@ -31,6 +31,9 @@ public sealed partial class QuestionViewModel : ObservableObject
     [ObservableProperty] public partial string? SourceExcerpt { get; set; }
     [ObservableProperty] public partial string ProblemsText { get; set; } = "";
 
+    /// <summary>Non-blocking: the question comes sooner after the previous one than the lecture's minimum.</summary>
+    [ObservableProperty] public partial string SpacingWarning { get; set; } = "";
+
     public ObservableCollection<OptionViewModel> Options { get; } = [];
 
     public static IReadOnlyList<string> TypeNames { get; } = ["Multiple choice", "True / false", "Fill in the blank"];
@@ -42,6 +45,7 @@ public sealed partial class QuestionViewModel : ObservableObject
     public bool IsTrueFalse => Type == QuestionType.TrueFalse;
     public bool IsFillInTheBlank => Type == QuestionType.FillInTheBlank;
     public bool HasProblems => ProblemsText.Length > 0;
+    public bool HasSpacingWarning => SpacingWarning.Length > 0;
     public bool HasSourceExcerpt => !string.IsNullOrWhiteSpace(SourceExcerpt);
     public bool OverridesWithReducedCredit => AttemptChoices.OverrideScoring(RetryScoringIndex) == RetryScoring.ReducedCredit;
 
@@ -70,7 +74,7 @@ public sealed partial class QuestionViewModel : ObservableObject
 
         PropertyChanged += (_, e) =>
         {
-            if (e.PropertyName is nameof(ProblemsText)) return;
+            if (e.PropertyName is nameof(ProblemsText) or nameof(SpacingWarning) or nameof(HasSpacingWarning)) return;
             _changed();
             Revalidate();
         };
@@ -95,6 +99,7 @@ public sealed partial class QuestionViewModel : ObservableObject
     }
 
     partial void OnProblemsTextChanged(string value) => OnPropertyChanged(nameof(HasProblems));
+    partial void OnSpacingWarningChanged(string value) => OnPropertyChanged(nameof(HasSpacingWarning));
     partial void OnSourceExcerptChanged(string? value) => OnPropertyChanged(nameof(HasSourceExcerpt));
 
     [RelayCommand]
@@ -107,6 +112,14 @@ public sealed partial class QuestionViewModel : ObservableObject
     private void Jump() => _seek(Timestamp);
 
     public void SetTimestamp(TimeSpan value) => TimestampText = TimeText.Format(value);
+
+    /// <param name="sincePrevious">Time since the question before this one on the timeline; null for the first.</param>
+    public void UpdateSpacingWarning(TimeSpan? sincePrevious, TimeSpan minimum)
+    {
+        SpacingWarning = sincePrevious is not { } gap || gap >= minimum ? ""
+            : gap < TimeSpan.FromSeconds(1) ? $"At the same time as the previous question (minimum is {TimeText.Describe(minimum)})."
+            : $"Only {TimeText.Describe(gap)} after the previous question (minimum is {TimeText.Describe(minimum)}).";
+    }
 
     public Question ToModel() => new()
     {

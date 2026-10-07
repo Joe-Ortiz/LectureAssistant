@@ -1,5 +1,6 @@
 using System.Text.Json;
 using LectureAssistant.Core.Hardware;
+using LectureAssistant.Core.Models;
 using LectureAssistant.Core.Persistence;
 
 namespace LectureAssistant.App.Services;
@@ -36,6 +37,9 @@ public sealed class AppSettings
     public int? LocalModelContextSize { get; set; }
 
     public int DefaultQuestionCount { get; set; } = 8;
+
+    /// <summary>The last "Minimum time between questions" chosen, used for lectures that haven't set their own.</summary>
+    public TimeSpan DefaultMinimumQuestionSpacing { get; set; } = QuizSettings.DefaultMinimumQuestionSpacing;
 
     /// <summary>Where the local question model last ran (graphics card or processor) and how long it took.</summary>
     public ModelRun? LastQuestionRun { get; set; }
