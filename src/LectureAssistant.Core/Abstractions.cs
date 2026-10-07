@@ -48,6 +48,12 @@ public sealed record QuestionGenerationRequest
     public TimeSpan MinimumSpacing { get; init; } = TimeSpan.FromSeconds(45);
 }
 
+/// <param name="Message">What's happening, e.g. "Writing question 3 of 8…".</param>
+/// <param name="Fraction">0..1 through the whole job, never decreasing within a run; null while the length of the
+/// current step can't be known (shown as an indeterminate bar).</param>
+/// <param name="TimeLeft">Rough time remaining, e.g. "About 2 minutes left"; null until there's a stable estimate.</param>
+public sealed record QuestionGenerationProgress(string Message, double? Fraction, string? TimeLeft = null);
+
 public interface IQuestionGenerator
 {
     /// <summary>Shown in the UI, e.g. "Claude (API key)" or "Local model".</summary>
@@ -55,7 +61,7 @@ public interface IQuestionGenerator
 
     Task<IReadOnlyList<Question>> GenerateAsync(
         QuestionGenerationRequest request,
-        IProgress<string>? progress,
+        IProgress<QuestionGenerationProgress>? progress,
         CancellationToken cancellationToken);
 }
 

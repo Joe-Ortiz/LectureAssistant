@@ -59,7 +59,7 @@ public sealed class LocalLlmQuestionGenerator : IQuestionGenerator, IReportsMode
 
     public Task<IReadOnlyList<Question>> GenerateAsync(
         QuestionGenerationRequest request,
-        IProgress<string>? progress,
+        IProgress<QuestionGenerationProgress>? progress,
         CancellationToken cancellationToken)
     {
         QuestionPrompt.EnsureUsable(request);
@@ -75,22 +75,24 @@ public sealed class LocalLlmQuestionGenerator : IQuestionGenerator, IReportsMode
     private async Task<IReadOnlyList<Question>> GenerateWithCpuFallbackAsync(
         QuestionGenerationRequest request,
         LocalLlmOptions options,
-        IProgress<string>? progress,
+        IProgress<QuestionGenerationProgress>? progress,
         CancellationToken cancellationToken)
     {
         var stopwatch = Stopwatch.StartNew();
         var device = ComputeDeviceReport.Unknown;
+        // The progress bar's message is the tracker's (reading, writing question n of m), so the device is
+        // reported separately.
         void OnLoaded(ComputeDeviceReport report)
         {
             device = report;
             DeviceProgress?.Report(report);
-            progress?.Report($"Writing questions on {report.Describe()}…");
         }
 
         IReadOnlyList<Question> questions;
         try
         {
-            questions = await GenerateCoreAsync(request, options, progress, OnLoaded, cancellationToken).ConfigureAwait(false);
+            questions = await GenerateCoreAsync(request, options, progress, "Loading the local model…", OnLoaded, cancellationToken)
+                .ConfigureAwait(false);
         }
         catch (QuestionGenerationException ex) when (
             options.GpuLayerCount > 0 &&
@@ -98,8 +100,9 @@ public sealed class LocalLlmQuestionGenerator : IQuestionGenerator, IReportsMode
             File.Exists(options.ModelPath) &&
             !cancellationToken.IsCancellationRequested)
         {
-            progress?.Report("The graphics card couldn't run the model, so the processor is being used instead (slower)…");
+            // Progress starts over (the bar resets), so say why.
             questions = await GenerateCoreAsync(request, options with { GpuLayerCount = 0 }, progress,
+                "The graphics card couldn't run the model, so the processor is being used instead (slower). Starting over…",
                 report => OnLoaded(report with { Reason = ComputeDeviceReport.GpuFailed }), cancellationToken).ConfigureAwait(false);
         }
         LastRun = new ModelRun(device, stopwatch.Elapsed);
@@ -109,14 +112,17 @@ public sealed class LocalLlmQuestionGenerator : IQuestionGenerator, IReportsMode
     private static async Task<IReadOnlyList<Question>> GenerateCoreAsync(
         QuestionGenerationRequest request,
         LocalLlmOptions options,
-        IProgress<string>? progress,
+        IProgress<QuestionGenerationProgress>? progress,
+        string loadingMessage,
         Action<ComputeDeviceReport> onLoaded,
         CancellationToken cancellationToken)
     {
         var modelParams = CreateModelParams(options);
-        progress?.Report("Loading the local model…");
+        var speed = options.GpuLayerCount > 0 ? SpeedGuess.Gpu : SpeedGuess.Cpu;
+        using var tracker = new QuestionProgressTracker(progress, SpeedGuess.TokensPerQuestion);
+        tracker.BeginLoading(loadingMessage, speed.LoadShare(request));
         using var loadLog = NativeLog.Start();
-        using var weights = await LoadAsync(modelParams, options, cancellationToken).ConfigureAwait(false);
+        using var weights = await LoadAsync(modelParams, options, tracker, cancellationToken).ConfigureAwait(false);
         var device = DetectDevice(loadLog.Stop(), modelParams.GpuLayerCount);
         // Reported once the context exists too, since creating it can fail on the GPU and fall back to the CPU.
         using var context = CreateContext(weights, modelParams, options);
@@ -140,45 +146,91 @@ public sealed class LocalLlmQuestionGenerator : IQuestionGenerator, IReportsMode
         var capacities = durations.Select(d => Math.Min(maxQuestionsPerSection, SpacingCapacity(d, request.MinimumSpacing))).ToList();
         var allocation = TranscriptChunker.Allocate(durations, capacities, request.QuestionCount);
 
-        var drafts = new List<QuestionDraft>();
-        int failedSections = 0, attemptedSections = 0;
+        // The grammar makes each section write exactly its allocation and sections run one after another, so the
+        // whole job is known up front: read each section's prompt, then write its questions.
+        var parts = new List<(int Section, string Prompt, int PromptTokens, int Count)>();
         for (int i = 0; i < chunks.Count; i++)
         {
+            if (allocation[i] == 0) continue;
+            var prompt = BuildPrompt(weights, request, allocation[i], new TranscriptSection(i + 1, chunks.Count, chunks[i]));
+            parts.Add((i, prompt, CountTokens(prompt), allocation[i]));
+        }
+        tracker.Plan(parts.Select(p => new PlannedPart(p.Count, speed.ReadWeight(p.PromptTokens))).ToList());
+
+        var drafts = new List<QuestionDraft>();
+        int failedSections = 0;
+        double readTokensPerSecond = speed.ReadTokensPerSecond;
+        for (int n = 0; n < parts.Count; n++)
+        {
             cancellationToken.ThrowIfCancellationRequested();
-            var count = allocation[i];
-            if (count == 0) continue;
-            attemptedSections++;
+            var (section, prompt, promptTokens, count) = parts[n];
 
-            var sectionLabel = chunks.Count > 1 ? $"Section {i + 1} of {chunks.Count}: " : "";
-            var writing = $"writing {count} question{(count == 1 ? "" : "s")}…";
-            progress?.Report(sectionLabel.Length > 0 ? sectionLabel + writing : char.ToUpperInvariant(writing[0]) + writing[1..]);
-
-            var section = new TranscriptSection(i + 1, chunks.Count, chunks[i]);
-            var prompt = BuildPrompt(weights, request, count, section);
-            var output = await InferAsync(context, prompt, request.AllowedTypes, count, perQuestion, options, cancellationToken)
-                .ConfigureAwait(false);
+            tracker.BeginPart(n, TimeSpan.FromSeconds(promptTokens / readTokensPerSecond));
+            var readStarted = Stopwatch.GetTimestamp();
+            bool firstPiece = true;
+            var output = await InferAsync(context, prompt, request.AllowedTypes, count, perQuestion, options, piece =>
+            {
+                if (firstPiece)
+                {
+                    // The reading speed measured on this PC paces the next section's reading step.
+                    firstPiece = false;
+                    var seconds = Stopwatch.GetElapsedTime(readStarted).TotalSeconds;
+                    if (seconds > 0.05) readTokensPerSecond = promptTokens / seconds;
+                }
+                tracker.OnOutput(piece, 1);
+            }, cancellationToken).ConfigureAwait(false);
+            tracker.EndPart();
 
             var sectionDrafts = QuestionDraftSchema.ParseLenient(output);
             if (sectionDrafts.Count == 0)
             {
                 failedSections++;
-                progress?.Report($"{sectionLabel}{(sectionLabel.Length > 0 ? "t" : "T")}he model's answer couldn't be read; skipping this section.");
+                tracker.Report(chunks.Count > 1
+                    ? $"Section {section + 1} of {chunks.Count}: the model's answer couldn't be read; skipping this section."
+                    : "The model's answer couldn't be read.");
                 continue;
             }
             drafts.AddRange(sectionDrafts);
         }
 
-        progress?.Report("Checking the questions…");
+        tracker.Complete("Checking the questions…");
         var questions = QuestionPostProcessor.Process(drafts, request);
         if (questions.Count == 0)
         {
             throw new QuestionGenerationException(QuestionGenerationFailure.InvalidResponse,
-                failedSections == attemptedSections
+                failedSections == parts.Count
                     ? "The local model didn't produce readable questions. Try a larger or instruction-tuned model, or use Claude."
                     : "The local model's questions didn't pass validation. Try again, try a larger model, or use Claude.");
         }
-        progress?.Report($"Generated {questions.Count} question{(questions.Count == 1 ? "" : "s")}.");
+        tracker.Complete($"Generated {questions.Count} question{(questions.Count == 1 ? "" : "s")}.");
         return questions;
+    }
+
+    /// <summary>
+    /// First guesses at this PC's speed. They only pace the progress bar until real speeds are measured
+    /// (Qwen 3.5 4B on an RTX 3070 vs. a typical laptop processor; bigger models are slower at every step alike).
+    /// </summary>
+    private sealed record SpeedGuess(double LoadSeconds, double ReadTokensPerSecond, double WriteTokensPerSecond)
+    {
+        /// <summary>Typical size of one question in the grammar's JSON, in tokens.</summary>
+        public const int TokensPerQuestion = 260;
+
+        public static readonly SpeedGuess Gpu = new(6, 1500, 60);
+        public static readonly SpeedGuess Cpu = new(4, 120, 10);
+
+        private double SecondsPerQuestion => TokensPerQuestion / WriteTokensPerSecond;
+
+        /// <summary>Time to read (process) a prompt, in "time to write one question".</summary>
+        public double ReadWeight(int promptTokens) => promptTokens / ReadTokensPerSecond / SecondsPerQuestion;
+
+        /// <summary>The part of the bar for loading the model, estimated before the transcript is tokenized.</summary>
+        public double LoadShare(QuestionGenerationRequest request)
+        {
+            // ~4 characters per token, plus each line's timestamp and the instructions in the prompt.
+            var promptTokens = request.Transcript.Sum(s => s.Text.Length + 10) / 4.0 + 1000;
+            var work = request.QuestionCount * SecondsPerQuestion + promptTokens / ReadTokensPerSecond;
+            return LoadSeconds / (LoadSeconds + work);
+        }
     }
 
     private static readonly TranscriptSection EmptySection =
@@ -204,6 +256,7 @@ public sealed class LocalLlmQuestionGenerator : IQuestionGenerator, IReportsMode
         int count,
         int perQuestion,
         LocalLlmOptions options,
+        Action<string> onPiece,
         CancellationToken cancellationToken)
     {
         using var sampling = new DefaultSamplingPipeline
@@ -218,6 +271,7 @@ public sealed class LocalLlmQuestionGenerator : IQuestionGenerator, IReportsMode
         var contextSize = (int)context.ContextSize;
         var decoder = new StreamingTokenDecoder(context);
         var batch = new LLamaBatch();
+        var sb = new StringBuilder();
         try
         {
             context.NativeHandle.MemoryClear();
@@ -231,6 +285,9 @@ public sealed class LocalLlmQuestionGenerator : IQuestionGenerator, IReportsMode
                 var token = sampling.Sample(context.NativeHandle, batch.TokenCount - 1);
                 if (token.IsEndOfGeneration(context.Vocab)) break;
                 decoder.Add(token);
+                var piece = decoder.Read();
+                sb.Append(piece);
+                onPiece(piece);
 
                 if (past + 1 >= contextSize) throw new ContextOverflowException();
                 batch.Clear();
@@ -249,7 +306,7 @@ public sealed class LocalLlmQuestionGenerator : IQuestionGenerator, IReportsMode
             throw new QuestionGenerationException(QuestionGenerationFailure.Other,
                 "The local model stopped with an error: " + ex.Message, ex);
         }
-        return decoder.Read();
+        return sb.ToString();
     }
 
     /// <summary>
@@ -339,12 +396,14 @@ public sealed class LocalLlmQuestionGenerator : IQuestionGenerator, IReportsMode
         return p;
     }
 
-    private static async Task<LLamaWeights> LoadAsync(ModelParams modelParams, LocalLlmOptions options, CancellationToken cancellationToken)
+    private static async Task<LLamaWeights> LoadAsync(
+        ModelParams modelParams, LocalLlmOptions options, QuestionProgressTracker tracker, CancellationToken cancellationToken)
     {
         ConfigureNativeLibrary();
         try
         {
-            return await LLamaWeights.LoadFromFileAsync(modelParams, cancellationToken).ConfigureAwait(false);
+            // llama.cpp reports loading progress from its own thread; the tracker is thread-safe.
+            return await LLamaWeights.LoadFromFileAsync(modelParams, cancellationToken, new LoadProgress(tracker)).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -357,6 +416,12 @@ public sealed class LocalLlmQuestionGenerator : IQuestionGenerator, IReportsMode
                 : $"The model \"{Path.GetFileName(options.ModelPath)}\" couldn't be loaded. It may be damaged or too large for this PC's memory. Try the Standard model in Settings, or delete and download it again.";
             throw new QuestionGenerationException(QuestionGenerationFailure.ModelLoadFailed, message, ex);
         }
+    }
+
+    /// <summary>Forwards llama.cpp's loading progress straight to the tracker (no context switch).</summary>
+    private sealed class LoadProgress(QuestionProgressTracker tracker) : IProgress<float>
+    {
+        public void Report(float value) => tracker.ReportLoad(value);
     }
 
     /// <summary>
