@@ -87,6 +87,24 @@ public class QuestionPromptTests
     }
 
     [Fact]
+    public void System_prompt_asks_for_reasoning_before_the_answer()
+    {
+        Assert.Contains("before the answer fields", QuestionPrompt.SystemPrompt);
+        Assert.Contains("Mix true and false", QuestionPrompt.SystemPrompt);
+        Assert.Contains("ignored placeholders", QuestionPrompt.SystemPrompt);
+        Assert.Contains("shuffles the options", QuestionPrompt.SystemPrompt);
+    }
+
+    [Theory]
+    [InlineData("So the statement is true.", true)]
+    [InlineData("So the statement is false.", false)]
+    public void Verdict_sentence_the_prompt_asks_for_is_recognized(string sentence, bool expected)
+    {
+        Assert.Contains($"\"{sentence}\"", QuestionPrompt.SystemPrompt);
+        Assert.Equal(expected, QuestionPostProcessor.StatedVerdict("The lecturer said so. " + sentence));
+    }
+
+    [Fact]
     public void Unusable_requests_get_friendly_errors()
     {
         var noTranscript = Assert.Throws<QuestionGenerationException>(() => QuestionPrompt.EnsureUsable(Request(transcript: [])));

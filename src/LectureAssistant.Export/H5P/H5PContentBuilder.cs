@@ -45,11 +45,21 @@ internal static partial class H5PContentBuilder
 
         var overrides = content["override"]!.AsObject();
         overrides["preventSkippingMode"] = project.Quiz.PreventSkippingAhead ? "forward" : "none";
-        overrides["retryButton"] = project.Quiz.AllowRetry ? "on" : "off";
+        // IV's override applies to every question, so it's only set when all questions agree;
+        // otherwise each question's own enableRetry decides.
+        var retries = project.Questions.Select(q => RetryEnabled(q, project.Quiz)).Distinct().ToList();
+        if (retries.Count == 1) overrides["retryButton"] = retries[0] ? "on" : "off";
+        else overrides.Remove("retryButton");
         overrides["showSolutionButton"] = project.Quiz.ShowCorrectAnswers ? "on" : "off";
 
         return content;
     }
+
+    /// <summary>
+    /// H5P question types only have a Retry button on or off: any limit above one attempt (or unlimited) turns it on.
+    /// They can't cap the number of attempts or reduce credit; <see cref="H5PExporter.Warnings"/> tells the instructor.
+    /// </summary>
+    internal static bool RetryEnabled(Question question, QuizSettings quiz) => AttemptRules.For(question, quiz).AllowsRetries;
 
     /// <summary>Machine names of the question libraries the project uses.</summary>
     public static IEnumerable<string> QuestionLibraries(LectureProject project) =>
@@ -120,7 +130,7 @@ internal static partial class H5PContentBuilder
         behaviour["singlePoint"] = multi;
         // The instructor's option order is intentional (e.g. "All of the above").
         behaviour["randomAnswers"] = false;
-        behaviour["enableRetry"] = quiz.AllowRetry;
+        behaviour["enableRetry"] = RetryEnabled(q, quiz);
         behaviour["enableSolutionsButton"] = quiz.ShowCorrectAnswers;
         return p;
     }
@@ -132,7 +142,7 @@ internal static partial class H5PContentBuilder
         p["correct"] = q.CorrectAnswer ? "true" : "false";
 
         var behaviour = p["behaviour"]!.AsObject();
-        behaviour["enableRetry"] = quiz.AllowRetry;
+        behaviour["enableRetry"] = RetryEnabled(q, quiz);
         behaviour["enableSolutionsButton"] = quiz.ShowCorrectAnswers;
         if (!string.IsNullOrWhiteSpace(q.Explanation))
         {
@@ -152,7 +162,7 @@ internal static partial class H5PContentBuilder
 
         var behaviour = p["behaviour"]!.AsObject();
         behaviour["caseSensitive"] = false;
-        behaviour["enableRetry"] = quiz.AllowRetry;
+        behaviour["enableRetry"] = RetryEnabled(q, quiz);
         behaviour["enableSolutionsButton"] = quiz.ShowCorrectAnswers;
         return p;
     }

@@ -379,6 +379,13 @@
                                             <TextBox Header="Explanation shown after answering" TextWrapping="Wrap" AcceptsReturn="True"
                                                      Text="{x:Bind Explanation, Mode=TwoWay}" />
 
+                                            <StackPanel Orientation="Horizontal" Spacing="8">
+                                                <ComboBox Header="Attempts" ItemsSource="{x:Bind vm:QuestionViewModel.AttemptNames}"
+                                                          SelectedIndex="{x:Bind AttemptsIndex, Mode=TwoWay}" MinWidth="150" />
+                                                <ComboBox Header="When a retry is correct" ItemsSource="{x:Bind vm:QuestionViewModel.RetryScoringNames}"
+                                                          SelectedIndex="{x:Bind RetryScoringIndex, Mode=TwoWay}" MinWidth="240" />
+                                            </StackPanel>
+
                                             <TextBlock Visibility="{x:Bind HasSourceExcerpt, Mode=OneWay}" TextWrapping="Wrap" FontStyle="Italic"
                                                        Foreground="{ThemeResource TextFillColorSecondaryBrush}">
                                                 <Run Text="From the lecture: " /><Run Text="{x:Bind SourceExcerpt, Mode=OneWay}" />
@@ -443,8 +450,15 @@
                                            SpinButtonPlacementMode="Compact" Width="160" HorizontalAlignment="Left" />
                                 <CheckBox Content="Don't let students skip past a question they haven't answered"
                                           IsChecked="{x:Bind ViewModel.PreventSkippingAhead, Mode=TwoWay}" />
-                                <CheckBox Content="Let students retry wrong answers (only the first attempt counts)"
-                                          IsChecked="{x:Bind ViewModel.AllowRetry, Mode=TwoWay}" />
+                                <ComboBox Header="Attempts allowed" ItemsSource="{x:Bind ViewModel.AttemptNames}"
+                                          SelectedIndex="{x:Bind ViewModel.AttemptsIndex, Mode=TwoWay}" MinWidth="160" />
+                                <ComboBox Header="When a retry is correct" ItemsSource="{x:Bind ViewModel.RetryScoringNames}"
+                                          SelectedIndex="{x:Bind ViewModel.RetryScoringIndex, Mode=TwoWay}" MinWidth="260" />
+                                <NumberBox Header="Credit lost per retry (%)" Value="{x:Bind ViewModel.RetryPenaltyPercent, Mode=TwoWay}" Minimum="1" Maximum="100"
+                                           SpinButtonPlacementMode="Compact" Width="190" HorizontalAlignment="Left"
+                                           Visibility="{x:Bind ViewModel.ShowRetryPenalty, Mode=OneWay}" />
+                                <TextBlock TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                           Text="Each question can use its own attempts and scoring. Students can retry right away or later from the video timeline, and the correct answer stays hidden while a retry can still earn points." />
                                 <CheckBox Content="Show the correct answer and explanation after answering"
                                           IsChecked="{x:Bind ViewModel.ShowCorrectAnswers, Mode=TwoWay}" />
                             </StackPanel>
@@ -465,6 +479,8 @@
                                 <TextBlock Text="Export H5P Interactive Video" Style="{StaticResource SubtitleTextBlockStyle}" />
                                 <TextBlock TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                            Text="For schools with an H5P platform (H5P.com, Moodle, WordPress, Lumi). Scores go wherever your H5P platform sends them." />
+                                <TextBlock TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}"
+                                           Text="H5P questions only have retries on or off: a question allowing more than one attempt gets unlimited retries. H5P can't reduce credit for retries, and your H5P platform decides how a retried question is scored." />
                                 <TextBlock TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}"
                                            Text="Optional: choose any Interactive Video you exported from your own H5P platform. The export will then use exactly the H5P versions your platform has installed." />
                                 <StackPanel Orientation="Horizontal" Spacing="8">

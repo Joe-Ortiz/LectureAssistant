@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text;
 using LLama;
 using LLama.Common;
@@ -6,6 +7,7 @@ using LLama.Native;
 using LLama.Sampling;
 using LLama.Transformers;
 using LectureAssistant.Core;
+using LectureAssistant.Core.Hardware;
 using LectureAssistant.Core.Models;
 
 namespace LectureAssistant.QuestionGeneration.Local;
@@ -20,7 +22,7 @@ namespace LectureAssistant.QuestionGeneration.Local;
 /// The transcript is split into sections that fit the context window; each is prompted with the model's own
 /// chat template and sampled under a GBNF grammar (<see cref="QuestionGrammar"/>) so the output is always valid JSON.
 /// </remarks>
-public sealed class LocalLlmQuestionGenerator : IQuestionGenerator
+public sealed class LocalLlmQuestionGenerator : IQuestionGenerator, IReportsModelRun
 {
     /// <summary>Tokens reserved beyond the prompt and answer for template quirks and BOS/EOS.</summary>
     private const int SafetyMargin = 128;
@@ -28,7 +30,22 @@ public sealed class LocalLlmQuestionGenerator : IQuestionGenerator
     private static readonly object NativeConfigLock = new();
     private static bool _nativeConfigured;
 
+    /// <summary>llama.cpp's log, recorded only while a model loads to see where its layers went.</summary>
+    private static readonly NativeLogRecorder NativeLog = new();
+
+    /// <summary>Vulkan devices ggml listed when it started; it only lists them once per process.</summary>
+    private static IReadOnlyList<VulkanDevice> _vulkanDevices = [];
+
     private readonly Func<LocalLlmOptions> _options;
+
+    /// <summary>
+    /// Told where the model is running (graphics card or processor) as soon as it has loaded, and again if it
+    /// has to move to the processor. Use a <see cref="Progress{T}"/> created on the UI thread.
+    /// </summary>
+    public IProgress<ComputeDeviceReport>? DeviceProgress { get; set; }
+
+    /// <summary>Where the last successful <see cref="GenerateAsync"/> ran and how long it took (including loading).</summary>
+    public ModelRun? LastRun { get; private set; }
 
     public LocalLlmQuestionGenerator(LocalLlmOptions options) : this(() => options) { }
 
@@ -55,15 +72,25 @@ public sealed class LocalLlmQuestionGenerator : IQuestionGenerator
     /// If the graphics card can't hold the model (or its driver misbehaves), run on the processor instead of
     /// failing: slower, but instructors shouldn't have to know what "GPU layers" means.
     /// </summary>
-    private static async Task<IReadOnlyList<Question>> GenerateWithCpuFallbackAsync(
+    private async Task<IReadOnlyList<Question>> GenerateWithCpuFallbackAsync(
         QuestionGenerationRequest request,
         LocalLlmOptions options,
         IProgress<string>? progress,
         CancellationToken cancellationToken)
     {
+        var stopwatch = Stopwatch.StartNew();
+        var device = ComputeDeviceReport.Unknown;
+        void OnLoaded(ComputeDeviceReport report)
+        {
+            device = report;
+            DeviceProgress?.Report(report);
+            progress?.Report($"Writing questions on {report.Describe()}…");
+        }
+
+        IReadOnlyList<Question> questions;
         try
         {
-            return await GenerateCoreAsync(request, options, progress, cancellationToken).ConfigureAwait(false);
+            questions = await GenerateCoreAsync(request, options, progress, OnLoaded, cancellationToken).ConfigureAwait(false);
         }
         catch (QuestionGenerationException ex) when (
             options.GpuLayerCount > 0 &&
@@ -72,20 +99,28 @@ public sealed class LocalLlmQuestionGenerator : IQuestionGenerator
             !cancellationToken.IsCancellationRequested)
         {
             progress?.Report("The graphics card couldn't run the model, so the processor is being used instead (slower)…");
-            return await GenerateCoreAsync(request, options with { GpuLayerCount = 0 }, progress, cancellationToken).ConfigureAwait(false);
+            questions = await GenerateCoreAsync(request, options with { GpuLayerCount = 0 }, progress,
+                report => OnLoaded(report with { Reason = ComputeDeviceReport.GpuFailed }), cancellationToken).ConfigureAwait(false);
         }
+        LastRun = new ModelRun(device, stopwatch.Elapsed);
+        return questions;
     }
 
     private static async Task<IReadOnlyList<Question>> GenerateCoreAsync(
         QuestionGenerationRequest request,
         LocalLlmOptions options,
         IProgress<string>? progress,
+        Action<ComputeDeviceReport> onLoaded,
         CancellationToken cancellationToken)
     {
         var modelParams = CreateModelParams(options);
         progress?.Report("Loading the local model…");
+        using var loadLog = NativeLog.Start();
         using var weights = await LoadAsync(modelParams, options, cancellationToken).ConfigureAwait(false);
+        var device = DetectDevice(loadLog.Stop(), modelParams.GpuLayerCount);
+        // Reported once the context exists too, since creating it can fail on the GPU and fall back to the CPU.
         using var context = CreateContext(weights, modelParams, options);
+        onLoaded(device);
 
         int CountTokens(string text) => weights.Tokenize(text, false, true, Encoding.UTF8).Length;
 
@@ -303,6 +338,8 @@ public sealed class LocalLlmQuestionGenerator : IQuestionGenerator
             throw new QuestionGenerationException(QuestionGenerationFailure.ModelLoadFailed,
                 "The local model file wasn't found. Choose a .gguf model file in Settings.");
 
+        // Constructing ModelParams loads the native library, after which its configuration can't change.
+        ConfigureNativeLibrary();
         var p = new ModelParams(options.ModelPath)
         {
             ContextSize = (uint)Math.Max(2048, options.ContextSize),
@@ -333,6 +370,29 @@ public sealed class LocalLlmQuestionGenerator : IQuestionGenerator
     }
 
     /// <summary>
+    /// Where the model's layers went, from llama.cpp's load log ("offloaded 33/33 layers to GPU"), or from the
+    /// runtime itself if the log didn't say.
+    /// </summary>
+    private static ComputeDeviceReport DetectDevice(IReadOnlyList<string> loadLog, int requestedGpuLayers)
+    {
+        var vulkanDevices = GgmlLog.ParseVulkanDevices(loadLog);
+        if (vulkanDevices.Count > 0) _vulkanDevices = vulkanDevices;
+
+        bool gpuOffloadSupported;
+        try
+        {
+            // False when the CPU build was loaded (Vulkan runtime missing or broken) or Vulkan found no device.
+            gpuOffloadSupported = NativeApi.llama_supports_gpu_offload() &&
+                NativeApi.GetLoadedNativeLibrary(NativeLibraryName.LLama)?.Metadata?.UseVulkan != false;
+        }
+        catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException)
+        {
+            gpuOffloadSupported = false;
+        }
+        return GgmlLog.InterpretLlamaLoad(GgmlLog.ParseLlamaLoad(loadLog), requestedGpuLayers, gpuOffloadSupported, _vulkanDevices);
+    }
+
+    /// <summary>
     /// Prefer the Vulkan backend (NVIDIA/AMD/Intel GPUs without CUDA) and fall back to the best CPU build
     /// (AVX512/AVX2/AVX/none) if Vulkan can't load. Must run before the first native call; later calls are ignored.
     /// </summary>
@@ -347,7 +407,8 @@ public sealed class LocalLlmQuestionGenerator : IQuestionGenerator
                 NativeLibraryConfig.All
                     .WithVulkan(true)
                     .WithAutoFallback(true)
-                    .WithLogCallback((level, message) => { /* llama.cpp is chatty; keep it off stderr */ });
+                    // llama.cpp is chatty; keep it off stderr. Only recorded while a model loads (see DetectDevice).
+                    .WithLogCallback((level, message) => NativeLog.Write(message, level == LLamaLogLevel.Continue));
             }
             catch (InvalidOperationException)
             {

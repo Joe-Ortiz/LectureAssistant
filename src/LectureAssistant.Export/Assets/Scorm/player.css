@@ -151,6 +151,8 @@ body { margin: 0; }
 
 .marker.is-correct { border-color: var(--correct); background: var(--correct-bg); color: var(--correct); }
 .marker.is-wrong { border-color: var(--wrong); background: var(--wrong-bg); color: var(--wrong); }
+/* Correct on a retry for reduced credit. */
+.marker.is-partial { border-color: var(--correct); border-style: dashed; background: var(--surface); color: var(--correct); }
 
 .button {
   display: inline-flex;

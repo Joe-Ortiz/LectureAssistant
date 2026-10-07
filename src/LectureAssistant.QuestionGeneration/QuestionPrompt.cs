@@ -46,20 +46,27 @@ internal static class QuestionPrompt
           half-understood the explanation (common misconceptions, a related but different concept, a
           reversed relationship), similar in length, grammar and specificity to the correct option, and
           clearly wrong to someone who understood. Avoid "all of the above", "none of the above", and joke
-          options. Give each option one sentence of feedback explaining why it is right or wrong.
+          options. Give each option one sentence of feedback explaining why it is right or wrong. The app
+          shuffles the options, so write them in any order and never refer to another option by position.
         - true_false: a single clear statement that is unambiguously true or false according to the lecture.
-          Avoid double negatives and "always/never" giveaways. Vary which answer is correct.
+          Decide whether it is true or false from what the lecturer said, never by default. Mix true and false
+          statements across your questions (roughly half each). Avoid double negatives and "always/never"
+          giveaways.
         - fill_in_the_blank: a statement with exactly one blank written as ___ (three underscores) where a key
           term belongs. The blank must be answerable with a short term (one to three words). List every answer
           that should be accepted: synonyms, abbreviations, singular/plural and common spelling variants.
         - Use a mix of the allowed types unless the instructor asks otherwise.
 
         Every question also needs
-        - explanation: two or three sentences on why the answer is correct, based on what the lecturer said.
         - source_excerpt: a short verbatim quote (one or two sentences) from the transcript that the question
           is based on.
-        - Fields that do not apply to a question's type are left empty: options = [], accepted_answers = [],
-          correct_answer = false.
+        - explanation, written right after the prompt and before the answer fields: two or three sentences on
+          what the correct answer is and why, based on what the lecturer said. Work the answer out here, then
+          make the answer fields agree with it. For true_false, compare the statement with what the lecturer
+          said and end with "So the statement is true." or "So the statement is false."
+        - Fields that do not apply to a question's type are ignored placeholders: options = [] and
+          accepted_answers = [] when unused, and correct_answer = false for multiple_choice and
+          fill_in_the_blank. For true_false, correct_answer is the real answer and must match the explanation.
 
         Follow the instructor's guidance (topic focus, level of the students, style) when it is given.
         Write in the language of the lecture. Return only the JSON object.

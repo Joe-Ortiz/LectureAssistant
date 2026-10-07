@@ -18,10 +18,11 @@ public class QuestionPostProcessorTests
 
         var mc = result[0];
         Assert.Equal(QuestionType.MultipleChoice, mc.Type);
-        Assert.Equal(["Right", "Wrong", "Also wrong"], mc.Options.Select(o => o.Text));
-        Assert.True(mc.Options[0].IsCorrect);
-        Assert.Equal("Yes.", mc.Options[0].Feedback);
-        Assert.Null(mc.Options[2].Feedback); // empty feedback becomes null
+        Assert.Equal(["Also wrong", "Right", "Wrong"], mc.Options.Select(o => o.Text).Order()); // shuffled
+        var right = Assert.Single(mc.Options, o => o.IsCorrect);
+        Assert.Equal("Right", right.Text);
+        Assert.Equal("Yes.", right.Feedback);
+        Assert.Null(mc.Options.Single(o => o.Text == "Also wrong").Feedback); // empty feedback becomes null
         Assert.Equal("Because the lecturer said so.", mc.Explanation);
         Assert.Equal("Right is right.", mc.SourceExcerpt);
         Assert.Equal(1, mc.Points);
@@ -181,8 +182,125 @@ public class QuestionPostProcessorTests
         draft.Options!.Add(new() { Text = "  ", IsCorrect = false });
         draft.Options!.Add(new() { Text = "right", IsCorrect = false });
         draft.Options!.Add(null!);
-        var q = Assert.Single(QuestionPostProcessor.Process([draft], Request()));
+        var q = QuestionPostProcessor.ToQuestion(draft, QuestionType.MultipleChoice);
         Assert.Equal(["Right", "Wrong", "Also wrong"], q.Options.Select(o => o.Text));
+    }
+
+    private static List<QuestionDraft> McSet(int count, int optionCount = 3) =>
+        Enumerable.Range(0, count).Select(i =>
+        {
+            var draft = Mc(50 + i * 50, prompt: $"Q{i}");
+            draft.Options = Enumerable.Range(0, optionCount)
+                .Select(k => new QuestionDraftOption { Text = $"Option {i}.{k}", IsCorrect = k == 0, Feedback = $"Feedback {i}.{k}" })
+                .ToList();
+            return draft;
+        }).ToList();
+
+    [Theory]
+    [InlineData(3)]
+    [InlineData(4)]
+    [InlineData(5)]
+    public void Correct_option_position_is_balanced_across_the_set(int optionCount)
+    {
+        // The model wrote every correct option first; afterwards each slot holds the answer equally often.
+        for (int seed = 0; seed < 20; seed++)
+        {
+            var result = QuestionPostProcessor.Process(McSet(optionCount * 2, optionCount), Request(count: 20), new Random(seed));
+            var positions = result.Select(q => q.Options.FindIndex(o => o.IsCorrect)).ToList();
+            Assert.All(Enumerable.Range(0, optionCount), slot => Assert.Equal(2, positions.Count(p => p == slot)));
+        }
+    }
+
+    [Fact]
+    public void Shuffling_keeps_feedback_and_correctness_with_each_option()
+    {
+        var result = QuestionPostProcessor.Process(McSet(6, 4), Request(), new Random(7));
+        foreach (var q in result)
+        {
+            Assert.All(q.Options, o => Assert.Equal("Feedback " + o.Text["Option ".Length..], o.Feedback));
+            Assert.EndsWith(".0", Assert.Single(q.Options, o => o.IsCorrect).Text);
+            Assert.Equal(4, q.Options.Select(o => o.Text).Distinct().Count());
+        }
+    }
+
+    [Fact]
+    public void Same_seed_gives_the_same_order()
+    {
+        string Orders(int seed) => string.Join("|", QuestionPostProcessor.Process(McSet(6, 4), Request(), new Random(seed))
+            .SelectMany(q => q.Options.Select(o => o.Text)));
+        Assert.Equal(Orders(3), Orders(3));
+        Assert.NotEqual(Orders(3), Orders(4));
+    }
+
+    [Fact]
+    public void Multiple_correct_options_are_shuffled_and_stay_correct()
+    {
+        var drafts = McSet(8, 4);
+        drafts.ForEach(d => d.Options![1].IsCorrect = true);
+        var result = QuestionPostProcessor.Process(drafts, Request(), new Random(1));
+        Assert.All(result, q => Assert.Equal(
+            [$"Option {q.Prompt[1..]}.0", $"Option {q.Prompt[1..]}.1"],
+            q.Options.Where(o => o.IsCorrect).Select(o => o.Text).Order()));
+        Assert.Contains(result, q => !q.Options[0].IsCorrect || !q.Options[1].IsCorrect); // not all left in place
+    }
+
+    [Theory]
+    [InlineData("All of the above")]
+    [InlineData("None of the above")]
+    [InlineData("Both A and B")]
+    [InlineData("Neither of these")]
+    public void Options_that_refer_to_other_options_keep_their_slot(string text)
+    {
+        var drafts = McSet(6, 3);
+        drafts.ForEach(d => d.Options!.Add(new() { Text = text, IsCorrect = false }));
+        var result = QuestionPostProcessor.Process(drafts, Request(), new Random(2));
+        Assert.All(result, q => Assert.Equal(text, q.Options[^1].Text));
+        Assert.Equal(3, result.Select(q => q.Options.FindIndex(o => o.IsCorrect)).Distinct().Count()); // the rest still move
+    }
+
+    [Theory]
+    // Opening verdicts that contradict the answer win.
+    [InlineData("False. The lecturer said entropy never decreases.", true, false)]
+    [InlineData("**False.** The lecturer said entropy never decreases.", true, false)]
+    [InlineData("True: heat flows from hot to cold on its own.", false, true)]
+    [InlineData("This statement is false because entropy never decreases.", true, false)]
+    [InlineData("The statement is true. Heat flows from hot to cold.", false, true)]
+    [InlineData("This is incorrect. Entropy never decreases.", true, false)]
+    [InlineData("Correct. Heat flows from hot to cold.", false, true)]
+    // Closing verdicts (the form the prompt asks for).
+    [InlineData("The lecturer said entropy never decreases. So the statement is false.", true, false)]
+    [InlineData("Heat flows from hot to cold, so the statement is true.", false, true)]
+    [InlineData("Entropy never decreases. This statement is therefore false.", true, false)]
+    [InlineData("Entropy never decreases, so it is false.", true, false)]
+    // Agreeing verdicts change nothing.
+    [InlineData("False. The lecturer said entropy never decreases.", false, false)]
+    [InlineData("Heat flows from hot to cold. So the statement is true.", true, true)]
+    // No clear verdict: the model's answer stands.
+    [InlineData("Rayleigh scattering.", true, true)]
+    [InlineData("Rayleigh scattering.", false, false)]
+    [InlineData("True of isolated systems only: entropy never decreases there.", false, false)]
+    [InlineData("False memories form when recall is reconstructed.", true, true)]
+    [InlineData("The statement is true only for isolated systems.", false, false)]
+    [InlineData("The statement is not false; entropy never decreases.", false, false)]
+    [InlineData("This is true of every closed system.", false, false)]
+    [InlineData("Students often wonder whether the statement is true.", false, false)]
+    [InlineData("False. Entropy can fall locally. So the statement is true.", false, false)] // contradicts itself
+    [InlineData("False. Entropy can fall locally. So the statement is true.", true, true)]
+    public void True_false_answer_follows_a_clear_verdict_in_the_explanation(string explanation, bool modelAnswer, bool expected)
+    {
+        var draft = Tf(100, answer: modelAnswer);
+        draft.Explanation = explanation;
+        var q = Assert.Single(QuestionPostProcessor.Process([draft], Request()));
+        Assert.Equal(expected, q.CorrectAnswer);
+        Assert.Equal(explanation, q.Explanation);
+    }
+
+    [Fact]
+    public void True_false_without_an_answer_is_dropped_even_with_a_verdict()
+    {
+        var draft = Tf(100, answer: null);
+        draft.Explanation = "False. Entropy never decreases.";
+        Assert.Empty(QuestionPostProcessor.Process([draft], Request()));
     }
 
     [Fact]

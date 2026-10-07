@@ -23,7 +23,8 @@ public sealed record LocalModelInfo(
 
 /// <param name="SystemMemoryBytes">Installed RAM.</param>
 /// <param name="GpuMemoryBytes">Dedicated video memory of the best GPU, or 0 if none was found.</param>
-public sealed record HardwareProfile(long SystemMemoryBytes, long GpuMemoryBytes);
+/// <param name="GpuName">That GPU's name as Windows reports it, if one was found.</param>
+public sealed record HardwareProfile(long SystemMemoryBytes, long GpuMemoryBytes, string? GpuName = null);
 
 public static class LocalModelCatalog
 {
@@ -68,13 +69,17 @@ public static class LocalModelCatalog
             ? Best
             : Standard;
 
-    /// <summary>A warning when the PC is below what the model needs, or null when it should run fine.</summary>
+    /// <summary>
+    /// A warning when the PC is below what the model needs, or null when it should run fine. Where the model runs
+    /// (and how fast) is described by <see cref="DeviceForecasts.ForQuestionModel"/>, so the recommended model on a
+    /// PC without a suitable graphics card isn't flagged: running on the processor is what it's for.
+    /// </summary>
     public static string? HardwareWarning(LocalModelInfo model, HardwareProfile hardware)
     {
         if (hardware.SystemMemoryBytes > 0 && hardware.SystemMemoryBytes < model.MinSystemMemoryBytes && hardware.GpuMemoryBytes < model.MinGpuMemoryBytes)
             return $"This PC may not have enough memory for this model ({DownloadProgress.FormatBytes(model.MinSystemMemoryBytes)} recommended).";
-        if (hardware.GpuMemoryBytes < model.MinGpuMemoryBytes)
-            return "No suitable graphics card was found, so this model will run on the processor and can take several minutes per lecture.";
+        if (hardware.GpuMemoryBytes < model.MinGpuMemoryBytes && Recommend(hardware) is var recommended && recommended != model)
+            return $"This PC's graphics can't hold this model, so it will be slow (several minutes or more per lecture). The {recommended.DisplayName} model is quicker here.";
         return null;
     }
 }

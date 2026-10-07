@@ -64,8 +64,20 @@ public sealed class QuizSettings
     /// <summary>Stop students from seeking past a question they haven't answered.</summary>
     public bool PreventSkippingAhead { get; set; } = true;
 
-    /// <summary>Let students retry a question they got wrong (only the first attempt is scored).</summary>
-    public bool AllowRetry { get; set; } = true;
+    /// <summary>
+    /// How many times a student may answer each question: 1 means no retries, <see cref="AttemptRules.Unlimited"/> (0)
+    /// means as many as they like. A question can override it with <see cref="Question.AttemptsAllowed"/>.
+    /// </summary>
+    public int AttemptsAllowed { get; set; } = AttemptRules.Unlimited;
+
+    /// <summary>How a correct answer on a retry is scored. A question can override it with <see cref="Question.RetryScoring"/>.</summary>
+    public RetryScoring RetryScoring { get; set; } = RetryScoring.FirstAttemptOnly;
+
+    /// <summary>
+    /// With <see cref="RetryScoring.ReducedCredit"/>: percent of a question's points lost for each retry
+    /// (50 gives 100%, 50%, 0%, ...). Credit never goes below zero.
+    /// </summary>
+    public int RetryPenaltyPercent { get; set; } = AttemptRules.DefaultRetryPenaltyPercent;
 
     /// <summary>Reveal the correct answer and explanation after a student answers.</summary>
     public bool ShowCorrectAnswers { get; set; } = true;
@@ -78,4 +90,21 @@ public sealed class QuizSettings
     /// existed) means the app's default.
     /// </summary>
     public TimeSpan? MinimumQuestionSpacing { get; set; }
+
+    /// <summary>
+    /// Projects saved before attempts were configurable have an on/off "allowRetry" switch (retries were unlimited
+    /// and only the first attempt was scored). Reading it maps on to unlimited attempts with only the first attempt
+    /// counting, and off to a single attempt. It is never written.
+    /// </summary>
+    [JsonInclude, JsonPropertyName("allowRetry"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    private bool? LegacyAllowRetry
+    {
+        get => null;
+        set
+        {
+            if (value is null) return;
+            AttemptsAllowed = value.Value ? AttemptRules.Unlimited : 1;
+            RetryScoring = RetryScoring.FirstAttemptOnly;
+        }
+    }
 }

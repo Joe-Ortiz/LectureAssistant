@@ -64,6 +64,20 @@ public partial class QuestionGrammarTests
         Assert.Contains(expected, QuestionGrammar.Build([QuestionType.TrueFalse], count));
     }
 
+    [Theory]
+    [InlineData("mc-body")]
+    [InlineData("tf-body")]
+    [InlineData("fib-body")]
+    public void Explanation_comes_before_the_answer_fields(string branch)
+    {
+        var body = ParseRules(QuestionGrammar.Build(Enum.GetValues<QuestionType>(), 3))[branch];
+        string[] order = ["key-prompt", "key-explanation", "key-options", "key-correct", "key-accepted"];
+        var positions = order.Select(key => body.IndexOf(key, StringComparison.Ordinal)).ToList();
+        Assert.All(positions, p => Assert.True(p >= 0));
+        Assert.Equal(positions.Order(), positions);
+        Assert.All(order, key => Assert.Equal(positions[Array.IndexOf(order, key)], body.LastIndexOf(key, StringComparison.Ordinal)));
+    }
+
     [Fact]
     public void Grammar_object_can_be_constructed_without_a_model()
     {

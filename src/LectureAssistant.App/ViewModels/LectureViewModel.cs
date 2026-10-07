@@ -5,9 +5,11 @@ using LectureAssistant.App.Helpers;
 using LectureAssistant.App.Services;
 using LectureAssistant.Core;
 using LectureAssistant.Core.Captions;
+using LectureAssistant.Core.Hardware;
 using LectureAssistant.Core.Models;
 using LectureAssistant.Core.Persistence;
 using LectureAssistant.Core.YouTube;
+using LectureAssistant.Export.H5P;
 using LectureAssistant.Transcription;
 
 namespace LectureAssistant.App.ViewModels;
@@ -89,7 +91,11 @@ public sealed partial class LectureViewModel(
     // Quiz settings
     [ObservableProperty] public partial double PassingScore { get; set; } = 70;
     [ObservableProperty] public partial bool PreventSkippingAhead { get; set; } = true;
-    [ObservableProperty] public partial bool AllowRetry { get; set; } = true;
+    /// <summary>Index into <see cref="AttemptChoices.AttemptNames"/>.</summary>
+    [ObservableProperty] public partial int AttemptsIndex { get; set; } = AttemptChoices.AttemptsIndex(AttemptRules.Unlimited);
+    /// <summary>Index into <see cref="AttemptChoices.ScoringNames"/>.</summary>
+    [ObservableProperty] public partial int RetryScoringIndex { get; set; } = AttemptChoices.ScoringIndex(RetryScoring.FirstAttemptOnly);
+    [ObservableProperty] public partial double RetryPenaltyPercent { get; set; } = AttemptRules.DefaultRetryPenaltyPercent;
     [ObservableProperty] public partial bool ShowCorrectAnswers { get; set; } = true;
 
     // Export
@@ -111,6 +117,11 @@ public sealed partial class LectureViewModel(
     public bool HasError => !string.IsNullOrEmpty(ErrorMessage);
     public bool HasSuccess => !string.IsNullOrEmpty(SuccessMessage);
     public string QuestionProviderText => questionGenerators.DescribeCurrent();
+    public IReadOnlyList<string> AttemptNames => AttemptChoices.AttemptNames;
+    public IReadOnlyList<string> RetryScoringNames => AttemptChoices.ScoringNames;
+    /// <summary>The penalty only matters when the quiz, or any question, uses reduced credit.</summary>
+    public bool ShowRetryPenalty =>
+        AttemptChoices.Scoring(RetryScoringIndex) == RetryScoring.ReducedCredit || Questions.Any(q => q.OverridesWithReducedCredit);
     public string H5PReferenceText => H5PReferencePackagePath is null
         ? "None: uses default library versions"
         : Path.GetFileName(H5PReferencePackagePath);
@@ -130,7 +141,9 @@ public sealed partial class LectureViewModel(
             SubjectIndex = IndexOfSubject(_project.SubjectArea ?? settings.Current.LastSubjectArea);
             PassingScore = _project.Quiz.PassingScorePercent;
             PreventSkippingAhead = _project.Quiz.PreventSkippingAhead;
-            AllowRetry = _project.Quiz.AllowRetry;
+            AttemptsIndex = AttemptChoices.AttemptsIndex(_project.Quiz.AttemptsAllowed);
+            RetryScoringIndex = AttemptChoices.ScoringIndex(_project.Quiz.RetryScoring);
+            RetryPenaltyPercent = _project.Quiz.RetryPenaltyPercent;
             ShowCorrectAnswers = _project.Quiz.ShowCorrectAnswers;
             MinimumSpacingIndex = NearestSpacingIndex(_project.Quiz.MinimumQuestionSpacing ?? settings.Current.DefaultMinimumQuestionSpacing);
             ReplaceCaptions(_project.Captions);
@@ -154,7 +167,10 @@ public sealed partial class LectureViewModel(
         {
             PassingScorePercent = Math.Clamp(double.IsNaN(PassingScore) ? 70 : PassingScore, 0, 100),
             PreventSkippingAhead = PreventSkippingAhead,
-            AllowRetry = AllowRetry,
+            AttemptsAllowed = AttemptChoices.Attempts(AttemptsIndex),
+            RetryScoring = AttemptChoices.Scoring(RetryScoringIndex),
+            RetryPenaltyPercent = (int)Math.Clamp(
+                Math.Round(double.IsNaN(RetryPenaltyPercent) ? AttemptRules.DefaultRetryPenaltyPercent : RetryPenaltyPercent), 1, 100),
             ShowCorrectAnswers = ShowCorrectAnswers,
             MinimumQuestionSpacing = MinimumSpacing,
         };
@@ -192,7 +208,9 @@ public sealed partial class LectureViewModel(
                 MarkDirty();
                 RefreshWordChecks();
                 break;
-            case nameof(Title) or nameof(PassingScore) or nameof(PreventSkippingAhead) or nameof(AllowRetry) or nameof(ShowCorrectAnswers):
+            case nameof(RetryScoringIndex): OnPropertyChanged(nameof(ShowRetryPenalty)); MarkDirty(); break;
+            case nameof(Title) or nameof(PassingScore) or nameof(PreventSkippingAhead) or nameof(AttemptsIndex) or nameof(RetryPenaltyPercent)
+                or nameof(ShowCorrectAnswers):
                 MarkDirty(); break;
             case nameof(MinimumSpacingIndex): OnMinimumSpacingChanged(); break;
         }
@@ -282,6 +300,7 @@ public sealed partial class LectureViewModel(
                     if (p.LatestSegment is { } s) LiveText = $"[{TimeText.Format(s.Start)}] {s.Text}";
                 });
                 var segments = await Task.Run(() => transcriber.TranscribeAsync(wavPath, options, transcriptionProgress, ct), ct);
+                var ranOn = RememberRun(transcriber, model.DisplayName.Split(" (")[0] + " speech model", run => settings.Current.LastTranscriptionRun = run);
 
                 int fixedWords = dictionary.Current.ApplyTo(segments);
                 dictionary.Save();
@@ -295,6 +314,7 @@ public sealed partial class LectureViewModel(
                     + (WordChecks.Count > 0
                         ? " Open \"Fix misheard words\" to check the words listed there, and review names and technical terms before publishing."
                         : " Review names and technical terms before publishing.");
+                if (ranOn.Length > 0) SuccessMessage += $" Transcribed {ranOn}.";
             }
             finally
             {
@@ -496,9 +516,15 @@ public sealed partial class LectureViewModel(
 
             ProgressIndeterminate = true;
             var generator = questionGenerators.Create();
+            if (generator is QuestionGeneration.Local.LocalLlmQuestionGenerator local)
+                local.DeviceProgress = new Progress<ComputeDeviceReport>(device => LiveText = device.StatusText);
             var generationProgress = new Progress<string>(s => BusyText = s);
             var generated = await Task.Run(() => generator.GenerateAsync(request, generationProgress, ct), ct);
             if (generator is IDisposable disposable) disposable.Dispose();
+            var modelName = questionGenerators.SelectedLocalModel is { } builtIn
+                ? builtIn.DisplayName + " model"
+                : Path.GetFileName(settings.Current.LocalModelPath);
+            var ranOn = RememberRun(generator, modelName, run => settings.Current.LastQuestionRun = run);
 
             var keep = ReplaceExistingQuestions ? [] : Questions.Select(q => q.ToModel()).ToList();
             ReplaceQuestions(keep.Concat(generated).OrderBy(q => q.Timestamp));
@@ -517,7 +543,20 @@ public sealed partial class LectureViewModel(
                     "from another question. Suggest again to try for more. Review each one; you're the expert.",
                 _ => $"Added {generated.Count} suggested question{(generated.Count == 1 ? "" : "s")}. Review each one; you're the expert.",
             };
+            if (ranOn.Length > 0) SuccessMessage += $" Written {ranOn}.";
         });
+    }
+
+    /// <summary>
+    /// Remembers where a local model ran (graphics card or processor) for Settings, and returns
+    /// "on your graphics card (…) in 34 seconds" for the success message, or "" when it isn't known.
+    /// </summary>
+    private string RememberRun(object model, string? modelName, Action<ModelRun> store)
+    {
+        if (model is not IReportsModelRun { LastRun: { } run }) return "";
+        store(run with { ModelName = modelName });
+        settings.Save();
+        return run.Where.Device == ComputeDevice.Unknown ? "" : $"on {run.Where.Describe()} in {ModelRun.FormatDuration(run.Duration)}";
     }
 
     /// <summary>Downloads through the app-wide service (so Settings shows the same progress), mirrored in this page's status panel.</summary>
@@ -577,14 +616,15 @@ public sealed partial class LectureViewModel(
         Questions.Remove(question);
         OnPropertyChanged(nameof(HasQuestions));
         OnPropertyChanged(nameof(HasNoQuestions));
-        UpdateSpacingWarnings();
-        MarkDirty();
+        OnQuestionChanged();
     }
 
+    /// <summary>A question was edited or removed.</summary>
     private void OnQuestionChanged()
     {
         MarkDirty();
         UpdateSpacingWarnings();
+        OnPropertyChanged(nameof(ShowRetryPenalty));
     }
 
     /// <summary>Flags questions that come sooner than the minimum after the previous one (a warning, not an export blocker).</summary>
@@ -631,6 +671,13 @@ public sealed partial class LectureViewModel(
             ErrorMessage = "Fix these before exporting:\n• " + string.Join("\n• ", problems);
             return;
         }
+
+        if (kind == "h5p" && H5PExporter.Warnings(project) is { Count: > 0 } warnings && ConfirmAsync is not null &&
+            !await ConfirmAsync(
+                "H5P can't match your retry settings",
+                string.Join("\n\n", warnings) + "\n\nThe SCORM package follows your settings exactly.",
+                "Export anyway"))
+            return;
 
         var path = await Pickers.SaveFileAsync(Pickers.SafeFileName(Title), exporter.DisplayName, exporter.FileExtension);
         if (path is null) return;
@@ -728,5 +775,6 @@ public sealed partial class LectureViewModel(
         OnPropertyChanged(nameof(HasQuestions));
         OnPropertyChanged(nameof(HasNoQuestions));
         UpdateSpacingWarnings();
+        OnPropertyChanged(nameof(ShowRetryPenalty));
     }
 }

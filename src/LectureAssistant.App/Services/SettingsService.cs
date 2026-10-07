@@ -1,4 +1,5 @@
 using System.Text.Json;
+using LectureAssistant.Core.Hardware;
 using LectureAssistant.Core.Models;
 using LectureAssistant.Core.Persistence;
 
@@ -39,6 +40,12 @@ public sealed class AppSettings
 
     /// <summary>The last "Minimum time between questions" chosen, used for lectures that haven't set their own.</summary>
     public TimeSpan DefaultMinimumQuestionSpacing { get; set; } = QuizSettings.DefaultMinimumQuestionSpacing;
+
+    /// <summary>Where the local question model last ran (graphics card or processor) and how long it took.</summary>
+    public ModelRun? LastQuestionRun { get; set; }
+
+    /// <summary>Where the speech model last ran and how long transcription took.</summary>
+    public ModelRun? LastTranscriptionRun { get; set; }
 }
 
 /// <summary>Non-secret preferences, stored as JSON. The API key lives in <see cref="SecretStore"/>.</summary>
