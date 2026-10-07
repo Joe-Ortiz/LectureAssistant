@@ -13,7 +13,10 @@ public sealed record TranscriptionOptions
     /// <summary>Whisper language code, or "auto" to detect.</summary>
     public string Language { get; init; } = "auto";
 
-    /// <summary>Course vocabulary (names, jargon) that biases recognition toward correct spellings.</summary>
+    /// <summary>
+    /// Text in the style of the lecture, full of course vocabulary (names, jargon), that biases recognition
+    /// toward correct spellings. Built by <see cref="Captions.RecognitionPrompt"/>.
+    /// </summary>
     public string? Vocabulary { get; init; }
 }
 

@@ -136,6 +136,8 @@ public sealed partial class LecturePage : Page
 
     private void RefreshPreview_Click(object sender, RoutedEventArgs e) => ReloadPreview();
 
+    private void Regenerate_Click(object sender, RoutedEventArgs e) => RegenerateFlyout.Hide();
+
     private void Steps_SelectionChanged(SelectorBar sender, SelectorBarSelectionChangedEventArgs args)
     {
         CaptionsPanel.Visibility = sender.SelectedItem == CaptionsStep ? Visibility.Visible : Visibility.Collapsed;

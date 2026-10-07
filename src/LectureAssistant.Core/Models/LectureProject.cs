@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace LectureAssistant.Core.Models;
 
 /// <summary>
@@ -20,6 +22,9 @@ public sealed class LectureProject
     /// <summary>Whisper language code ("en", "es", ...) or "auto".</summary>
     public string Language { get; set; } = "auto";
 
+    /// <summary><see cref="Core.Captions.SubjectAreas"/> id used to prime speech recognition; null in projects saved before subjects existed.</summary>
+    public string? SubjectArea { get; set; }
+
     public List<CaptionSegment> Captions { get; set; } = [];
     public List<Question> Questions { get; set; } = [];
     public QuizSettings Quiz { get; set; } = new();
@@ -36,6 +41,10 @@ public sealed class CaptionSegment
     public TimeSpan Start { get; set; }
     public TimeSpan End { get; set; }
     public string Text { get; set; } = "";
+
+    /// <summary>Words in <see cref="Text"/> the speech recognizer was unsure about; null when unknown (imported or older captions).</summary>
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public List<string>? UncertainWords { get; set; }
 
     public CaptionSegment() { }
 

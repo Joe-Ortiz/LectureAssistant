@@ -8,6 +8,7 @@ namespace LectureAssistant.App.ViewModels;
 public sealed partial class CaptionViewModel : ObservableObject
 {
     private readonly Action<TimeSpan> _seek;
+    private readonly List<string>? _uncertainWords;
 
     public TimeSpan Start { get; }
     public TimeSpan End { get; }
@@ -21,11 +22,12 @@ public sealed partial class CaptionViewModel : ObservableObject
         Start = model.Start;
         End = model.End;
         Text = model.Text;
+        _uncertainWords = model.UncertainWords;
         PropertyChanged += (_, _) => changed();
     }
 
     [RelayCommand]
     private void Jump() => _seek(Start);
 
-    public CaptionSegment ToModel() => new(Start, End, Text.Trim());
+    public CaptionSegment ToModel() => new(Start, End, Text.Trim()) { UncertainWords = _uncertainWords };
 }

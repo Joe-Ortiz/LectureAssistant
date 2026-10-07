@@ -4,6 +4,8 @@ A Windows desktop app (Microsoft Store, .NET 10 + WinUI 3) that helps instructor
 
 1. **Import** a lecture video.
 2. **Captions** are generated on the instructor's PC with Whisper, then reviewed and edited in the app.
+   - The instructor picks a **subject area** (remembered for the next lecture). Each subject has an example sentence full of correctly spelled terms that Whisper reads as preceding context, followed by terms from the instructor's **personal dictionary** (most recently used first, kept within Whisper's prompt limit). See `SubjectAreas.cs` and `RecognitionPrompt.cs`.
+   - **Fix misheard words** lists words to check: words Whisper gave low confidence (from its per-token probabilities), then names, terms and acronyms. Each can be replaced everywhere at once and remembered. Remembered fixes (e.g. "cooper netties" → "Kubernetes") are applied automatically to future lectures. The dictionary is stored in `dictionary.json` in the app's data folder and managed in Settings.
 3. **Questions** are suggested from the timestamped transcript by an AI model the app downloads and runs on the PC. Instructors can choose Claude with their own API key instead. Suggested questions always keep the instructor's "Minimum time between questions" (1 minute by default, saved with each lecture), including from questions already placed; if fewer fit, fewer are suggested. The questions are then reviewed and edited on the video timeline, where any placed closer than the minimum are flagged.
 4. **Publish**: the instructor uploads the video to YouTube (unlisted) with the caption file, pastes the link, and exports:
    - a **SCORM 1.2 package** for Canvas, Moodle, Blackboard or D2L. The LMS identifies the student and records the score in the gradebook; no server needed.
@@ -18,7 +20,7 @@ A Windows desktop app (Microsoft Store, .NET 10 + WinUI 3) that helps instructor
 | SCORM as the primary export | Canvas's SCORM tool gives real student identity and gradebook passback with zero infrastructure. LTI 1.3 is the long-term upgrade (see Roadmap). |
 | Local Whisper (Whisper.net) | Free, private, offline. Uses the GPU through Vulkan when present. Models download on first use (they're too large for the MSIX). |
 | Audio via Media Foundation | Windows decodes the video; no FFmpeg to bundle or license. |
-| Local model by default, Claude optional | Works with no account and nothing leaves the PC. The app picks a model for the PC's hardware, downloads it once (resumable, SHA-256 verified), and runs it with LLamaSharp on the GPU through Vulkan. It falls back to the CPU automatically, and output is grammar-constrained JSON. Instructors who want the best quality can use their own Anthropic API key instead, stored in Windows Credential Locker; a Store app can't safely contain one of ours. |
+| Local model by default, Claude optional | Works with no account and nothing leaves the PC. The app picks a model for the PC's hardware, downloads it once (resumable, SHA-256 verified), and runs it with LLamaSharp on the GPU through Vulkan. If video memory is short it uses a smaller context window (more, shorter transcript sections), then falls back to the CPU automatically, and output is grammar-constrained JSON. Instructors who want the best quality can use their own Anthropic API key instead, stored in Windows Credential Locker; a Store app can't safely contain one of ours. |
 
 ### Built-in local models
 
@@ -67,4 +69,4 @@ To debug the packaged app, open `LectureAssistant.slnx` in Visual Studio 2026 wi
 - YouTube Data API: upload the video and captions from the app (after Google verification and audit).
 - LTI 1.3 tool (hosted) with Deep Linking and Assignment and Grade Services, for a smoother Canvas experience than SCORM.
 - Optional hosted question-generation backend with a Store subscription, for instructors without an API key.
-- Caption editor features: split/merge cues, find and replace across the transcript.
+- Caption editor features: split/merge cues.

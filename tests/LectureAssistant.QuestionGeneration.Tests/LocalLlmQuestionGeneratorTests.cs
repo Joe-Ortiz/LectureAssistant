@@ -52,4 +52,30 @@ public class LocalLlmQuestionGeneratorTests
         Assert.Equal([2, 2, 2], plan);
         Assert.Equal(5, LocalLlmQuestionGenerator.PlanSections(ThreeSections(), Request(count: 5, spacing: TimeSpan.Zero), 10).Sum());
     }
+
+    [Theory]
+    [InlineData(262144, 262144, new[] { 262144, 131072, 65536, 32768, 16384, 8192 })]
+    [InlineData(16384, 262144, new[] { 16384, 8192 })]
+    [InlineData(10000, 262144, new[] { 10000, 8192 })]
+    [InlineData(8192, 262144, new[] { 8192 })]
+    public void Context_sizes_halve_down_to_the_minimum(int requested, int trained, int[] expected) =>
+        Assert.Equal(expected, LocalLlmQuestionGenerator.ContextSizesToTry(requested, trained));
+
+    [Fact]
+    public void Context_size_below_the_minimum_is_tried_as_is() =>
+        Assert.Equal([4096], LocalLlmQuestionGenerator.ContextSizesToTry(4096, 262144));
+
+    [Fact]
+    public void Context_size_is_capped_at_the_models_training_context()
+    {
+        Assert.Equal([32768, 16384, 8192], LocalLlmQuestionGenerator.ContextSizesToTry(131072, 32768));
+        // Never below what question generation needs, even for a model trained on less.
+        Assert.Equal([8192], LocalLlmQuestionGenerator.ContextSizesToTry(16384, 4096));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void Unknown_training_context_leaves_the_request_alone(int trained) =>
+        Assert.Equal([65536, 32768, 16384, 8192], LocalLlmQuestionGenerator.ContextSizesToTry(65536, trained));
 }
