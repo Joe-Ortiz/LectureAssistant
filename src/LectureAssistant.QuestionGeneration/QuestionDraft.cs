@@ -32,6 +32,10 @@ public sealed class QuestionDraft
     [JsonPropertyName("prompt")]
     public string? Prompt { get; set; }
 
+    /// <summary>Written before the answer fields, so the model reasons first and the answer follows from it.</summary>
+    [JsonPropertyName("explanation")]
+    public string? Explanation { get; set; }
+
     [JsonPropertyName("options")]
     public List<QuestionDraftOption>? Options { get; set; }
 
@@ -40,9 +44,6 @@ public sealed class QuestionDraft
 
     [JsonPropertyName("accepted_answers")]
     public List<string>? AcceptedAnswers { get; set; }
-
-    [JsonPropertyName("explanation")]
-    public string? Explanation { get; set; }
 }
 
 public sealed class QuestionDraftOption
@@ -163,6 +164,8 @@ public static class QuestionDraftSchema
     /// <summary>
     /// JSON Schema for structured outputs. Every property is required (structured outputs and the local
     /// grammar both work best with a fixed shape); unused fields are empty for the other types.
+    /// Models write properties in schema order, so the explanation comes before the answer fields: a model
+    /// that commits to an answer first tends to rationalize it instead of working it out.
     /// </summary>
     public static string BuildJsonSchema(IEnumerable<QuestionType> allowedTypes)
     {
@@ -183,8 +186,8 @@ public static class QuestionDraftSchema
                         additionalProperties = false,
                         required = new[]
                         {
-                            "source_excerpt", "timestamp_seconds", "type", "prompt", "options",
-                            "correct_answer", "accepted_answers", "explanation",
+                            "source_excerpt", "timestamp_seconds", "type", "prompt", "explanation",
+                            "options", "correct_answer", "accepted_answers",
                         },
                         properties = new Dictionary<string, object>
                         {
@@ -192,6 +195,7 @@ public static class QuestionDraftSchema
                             ["timestamp_seconds"] = new { type = "number", description = "Seconds value of the [Ns] marker on the transcript line where the relevant explanation finishes." },
                             ["type"] = new { type = "string", @enum = types },
                             ["prompt"] = new { type = "string", description = "The question. For fill_in_the_blank, a statement containing exactly one ___." },
+                            ["explanation"] = new { type = "string", description = "Written before the answer fields: two or three sentences, grounded in what the lecturer said, on what the correct answer is and why. For true_false, compare the statement with what the lecturer said, then end with \"So the statement is true.\" or \"So the statement is false.\" The answer fields after it must agree with it." },
                             ["options"] = new
                             {
                                 type = "array",
@@ -209,14 +213,13 @@ public static class QuestionDraftSchema
                                     },
                                 },
                             },
-                            ["correct_answer"] = new { type = "boolean", description = "true_false only; false for other types." },
+                            ["correct_answer"] = new { type = "boolean", description = "true_false: true if the statement is true according to the lecture, false if it is false; must agree with the explanation. Ignored placeholder for other types." },
                             ["accepted_answers"] = new
                             {
                                 type = "array",
                                 description = "fill_in_the_blank only: every acceptable answer (synonyms, abbreviations, spellings); empty for other types.",
                                 items = new { type = "string" },
                             },
-                            ["explanation"] = new { type = "string", description = "Why the answer is right, grounded in what the lecturer said." },
                         },
                     },
                 },

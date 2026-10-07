@@ -90,6 +90,31 @@ public class QuestionDraftSchemaTests
     }
 
     [Fact]
+    public void Schema_puts_the_explanation_before_the_answer_fields()
+    {
+        // Structured outputs emit required properties in schema order; the model should reason before answering.
+        using var doc = JsonDocument.Parse(QuestionDraftSchema.BuildJsonSchema(Enum.GetValues<QuestionType>()));
+        var item = doc.RootElement.GetProperty("properties").GetProperty("questions").GetProperty("items");
+        string[] expected =
+        [
+            "source_excerpt", "timestamp_seconds", "type", "prompt", "explanation",
+            "options", "correct_answer", "accepted_answers",
+        ];
+        Assert.Equal(expected, item.GetProperty("required").EnumerateArray().Select(r => r.GetString()));
+        Assert.Equal(expected, item.GetProperty("properties").EnumerateObject().Select(p => p.Name));
+    }
+
+    [Fact]
+    public void Correct_answer_is_not_described_as_defaulting_to_false()
+    {
+        using var doc = JsonDocument.Parse(QuestionDraftSchema.BuildJsonSchema(Enum.GetValues<QuestionType>()));
+        var description = doc.RootElement.GetProperty("properties").GetProperty("questions").GetProperty("items")
+            .GetProperty("properties").GetProperty("correct_answer").GetProperty("description").GetString();
+        Assert.Contains("placeholder", description);
+        Assert.DoesNotContain("false for other types", description);
+    }
+
+    [Fact]
     public void Schema_property_names_match_the_dto()
     {
         // A draft serialized with the DTO's names must round-trip through the schema's names.

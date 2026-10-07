@@ -8,7 +8,8 @@ namespace LectureAssistant.QuestionGeneration.Local;
 /// small model can only emit well-formed output. Stricter than the JSON schema: each question type has its
 /// own branch, so multiple choice always has 3-5 options, fill-in-the-blank prompts contain exactly one
 /// "___" and at least one accepted answer, and the array has exactly the requested number of questions.
-/// Field order matches <see cref="QuestionDraftSchema.BuildJsonSchema"/> (the excerpt first, to ground the question).
+/// Field order matches <see cref="QuestionDraftSchema.BuildJsonSchema"/>: the excerpt first, to ground the question,
+/// and the explanation before the answer fields, so the model reasons before it commits to an answer.
 /// </summary>
 internal static class QuestionGrammar
 {
@@ -38,20 +39,20 @@ internal static class QuestionGrammar
         if (types.Contains(QuestionType.MultipleChoice))
         {
             sb.Append("""
-                mc-body ::= "\"multiple_choice\"" ws "," ws key-prompt string-nonempty ws "," ws key-options "[" ws option (ws "," ws option){2,4} ws "]" ws "," ws key-correct "false" ws "," ws key-accepted "[" ws "]" ws "," ws key-explanation string-nonempty
+                mc-body ::= "\"multiple_choice\"" ws "," ws key-prompt string-nonempty ws "," ws key-explanation string-nonempty ws "," ws key-options "[" ws option (ws "," ws option){2,4} ws "]" ws "," ws key-correct "false" ws "," ws key-accepted "[" ws "]"
                 option ::= "{" ws "\"text\"" ws ":" ws string-nonempty ws "," ws "\"is_correct\"" ws ":" ws boolean ws "," ws "\"feedback\"" ws ":" ws string ws "}"
                 """).Append('\n');
         }
         if (types.Contains(QuestionType.TrueFalse))
         {
             sb.Append("""
-                tf-body ::= "\"true_false\"" ws "," ws key-prompt string-nonempty ws "," ws key-options "[" ws "]" ws "," ws key-correct boolean ws "," ws key-accepted "[" ws "]" ws "," ws key-explanation string-nonempty
+                tf-body ::= "\"true_false\"" ws "," ws key-prompt string-nonempty ws "," ws key-explanation string-nonempty ws "," ws key-options "[" ws "]" ws "," ws key-correct boolean ws "," ws key-accepted "[" ws "]"
                 """).Append('\n');
         }
         if (types.Contains(QuestionType.FillInTheBlank))
         {
             sb.Append("""
-                fib-body ::= "\"fill_in_the_blank\"" ws "," ws key-prompt blank-string ws "," ws key-options "[" ws "]" ws "," ws key-correct "false" ws "," ws key-accepted "[" ws string-nonempty (ws "," ws string-nonempty){0,7} ws "]" ws "," ws key-explanation string-nonempty
+                fib-body ::= "\"fill_in_the_blank\"" ws "," ws key-prompt blank-string ws "," ws key-explanation string-nonempty ws "," ws key-options "[" ws "]" ws "," ws key-correct "false" ws "," ws key-accepted "[" ws string-nonempty (ws "," ws string-nonempty){0,7} ws "]"
                 blank-string ::= "\"" no-underscore-char* "___" no-underscore-char* "\""
                 no-underscore-char ::= [^"\\_\x7F\x00-\x1F] | escape
                 """).Append('\n');
