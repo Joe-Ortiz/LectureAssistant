@@ -11,6 +11,19 @@ A Windows desktop app (Microsoft Store, .NET 10 + WinUI 3) that helps instructor
    - a **SCORM 1.2 package** for Canvas, Moodle, Blackboard or D2L. The LMS identifies the student and records the score in the gradebook; no server needed.
    - an **H5P Interactive Video** (`.h5p`) for schools with an H5P platform.
 
+## Quiz settings
+
+Set in step 3 for the whole lecture: passing score, whether students may skip past unanswered questions, whether the correct answer and explanation are shown, and retries:
+
+- **Attempts allowed**: 1 (no retries), 2 to 5, or unlimited.
+- **When a retry is correct**: full credit (any attempt within the limit earns full points), reduced credit (each retry loses a set percentage of the points, 50% by default, never below zero), or only the first attempt counts (retries are practice).
+
+Each question can override the attempts and the retry scoring; it uses the quiz setting by default. The score sent to the LMS is points earned ÷ total points. A question counts as answered after its first attempt. Students can retry a wrong answer right away or later from its marker on the video timeline, and the correct answer stays hidden while another try could still earn points. `AttemptRules` (Core) and `creditPercent` in `player.js` hold the same credit rules.
+
+H5P question types only support retries on or off. A question with more than one attempt gets unlimited retries there, H5P can't reduce credit for retries, and the H5P platform decides how a retried question is scored. The app warns before exporting an `.h5p` when the settings can't be matched.
+
+Projects saved before attempts were configurable load with their old on/off retry switch: on becomes unlimited attempts where only the first counts, and off becomes one attempt.
+
 ## Why these choices
 
 | Decision | Reason |

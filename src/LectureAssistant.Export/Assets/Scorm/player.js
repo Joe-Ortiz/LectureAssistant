@@ -11,7 +11,7 @@
   var SKIP_TOLERANCE_SECONDS = 1;
   var LOCATION_SAVE_STEP_SECONDS = 5;
   var YOUTUBE_LOAD_TIMEOUT_MS = 20000;
-  var SUSPEND_VERSION = 1;
+  var SUSPEND_VERSION = 2;
 
   var data = window.LECTURE_DATA;
 
@@ -237,17 +237,59 @@
 
   // ---------------------------------------------------------------- quiz state
 
-  /** results[i]: null (unanswered) or { correct: bool, response: any|undefined (only known this session) }. */
+  /**
+   * results[i]: null (unanswered) or { attempts: number used, correct: bool (latest attempt),
+   * credit: percent (0-100) of the points earned, response: any|undefined (latest answer, only known this session) }.
+   * A question counts as answered after its first attempt; while it isn't correct and attempts remain,
+   * the student may try it again.
+   */
   var results = questions.map(function () { return null; });
 
   function pointsOf(q) {
     return q.points > 0 ? q.points : 1;
   }
 
+  /**
+   * Percent (0-100) of the points a correct answer earns on attempt (1 = first try); nothing beyond the limit.
+   * attemptsAllowed 0 = unlimited. Mirrors AttemptRules.CreditPercent in the app exactly.
+   */
+  function creditPercent(q, attempt) {
+    if (attempt < 1 || (q.attemptsAllowed > 0 && attempt > q.attemptsAllowed)) return 0;
+    if (attempt === 1) return 100;
+    if (q.retryScoring === 'FullCredit') return 100;
+    if (q.retryScoring === 'ReducedCredit') return Math.max(0, 100 - q.retryPenaltyPercent * (attempt - 1));
+    return 0; // FirstAttemptOnly: retries are practice.
+  }
+
+  function attemptsUsed(index) {
+    return results[index] ? results[index].attempts : 0;
+  }
+
+  /** Attempts the student has left at a question, or Infinity when unlimited. */
+  function attemptsLeft(index) {
+    var limit = questions[index].attemptsAllowed;
+    return limit > 0 ? Math.max(0, limit - attemptsUsed(index)) : Infinity;
+  }
+
+  /** The student may answer again: not correct yet and attempts remain. */
+  function canTryAgain(index) {
+    return !(results[index] && results[index].correct) && attemptsLeft(index) > 0;
+  }
+
+  /** An answered question whose next attempt could still earn points. */
+  function retryCanEarn(index) {
+    return !!results[index] && canTryAgain(index) && creditPercent(questions[index], attemptsUsed(index) + 1) > 0;
+  }
+
   function earnedPoints() {
     return questions.reduce(function (sum, q, i) {
-      return sum + (results[i] && results[i].correct ? pointsOf(q) : 0);
+      return sum + (results[i] ? pointsOf(q) * results[i].credit / 100 : 0);
     }, 0);
+  }
+
+  /** Whole points, or up to two decimals after reduced credit. */
+  function formatPoints(n) {
+    return String(Math.round(n * 100) / 100);
   }
 
   function scorePercent() {
@@ -271,21 +313,45 @@
     return scorePercent() >= (Number(settings.passingScorePercent) || 0);
   }
 
-  /** Compact per-question first-attempt results: one character per question ('1' right, '0' wrong, '-' open). */
+  /**
+   * Compact per-question progress, a few characters per question (SCORM 1.2 allows 4096 in all):
+   * r: one character per question ('1' latest attempt right, '0' wrong, '-' open),
+   * a: attempts used and c: percent of the points earned, both comma-separated.
+   * Version 1 (r only, holding first-attempt results) is still read.
+   */
   function encodeSuspendData() {
-    var r = results.map(function (x) { return x ? (x.correct ? '1' : '0') : '-'; }).join('');
-    return JSON.stringify({ v: SUSPEND_VERSION, h: questionSetHash, r: r });
+    return JSON.stringify({
+      v: SUSPEND_VERSION,
+      h: questionSetHash,
+      r: results.map(function (x) { return x ? (x.correct ? '1' : '0') : '-'; }).join(''),
+      a: results.map(function (x) { return x ? x.attempts : 0; }).join(','),
+      c: results.map(function (x) { return x ? x.credit : 0; }).join(',')
+    });
   }
 
   function restoreSuspendData(text) {
     if (!text) return;
     try {
       var saved = JSON.parse(text);
-      if (!saved || saved.v !== SUSPEND_VERSION || saved.h !== questionSetHash) return;
+      if (!saved || (saved.v !== 1 && saved.v !== SUSPEND_VERSION) || saved.h !== questionSetHash) return;
       if (typeof saved.r !== 'string' || saved.r.length !== questions.length) return;
+      var attempts = null;
+      var credits = null;
+      if (saved.v !== 1) {
+        attempts = String(saved.a).split(',');
+        credits = String(saved.c).split(',');
+        if (attempts.length !== questions.length || credits.length !== questions.length) return;
+      }
       for (var i = 0; i < questions.length; i++) {
         var c = saved.r.charAt(i);
-        if (c === '1' || c === '0') results[i] = { correct: c === '1' };
+        if (c !== '1' && c !== '0') continue;
+        var correct = c === '1';
+        results[i] = {
+          correct: correct,
+          attempts: attempts ? Math.max(1, parseInt(attempts[i], 10) || 1) : 1,
+          // Version 1 scored first attempts only: right meant full credit.
+          credit: credits ? Math.min(100, Math.max(0, parseInt(credits[i], 10) || 0)) : (correct ? 100 : 0)
+        };
       }
     } catch (e) { /* ignore unreadable data and start fresh */ }
   }
@@ -514,30 +580,73 @@
     };
   }
 
-  /** Fills the feedback box. */
-  function renderFeedback(box, q, correct, context) {
+  var FIRST_ATTEMPT_NOTE = 'Only your first attempt counts toward your score.';
+
+  /** Verdict right after an attempt; result is the question's updated results entry. */
+  function answerVerdict(q, result) {
+    var firstOnly = q.retryScoring !== 'FullCredit' && q.retryScoring !== 'ReducedCredit';
+    if (!result.correct) return result.attempts > 1 && firstOnly ? 'Not quite. (' + FIRST_ATTEMPT_NOTE + ')' : 'Not quite.';
+    if (result.attempts === 1 || result.credit >= 100) return 'Correct!';
+    if (result.credit > 0) return 'Correct! This try earns ' + result.credit + '% of the points.';
+    return firstOnly ? 'Correct! (' + FIRST_ATTEMPT_NOTE + ')' : 'Correct! This try doesn\'t earn any points.';
+  }
+
+  /** Verdict when looking back at an answered question. */
+  function reviewVerdict(result) {
+    if (!result.correct) {
+      return result.attempts > 1 ? 'You answered incorrectly ' + result.attempts + ' times.' : 'Your answer was incorrect.';
+    }
+    if (result.attempts === 1) return 'You answered this correctly.';
+    var prefix = 'You answered this correctly on attempt ' + result.attempts;
+    if (result.credit >= 100) return prefix + '.';
+    if (result.credit > 0) return prefix + ', earning ' + result.credit + '% of the points.';
+    return prefix + ', which didn\'t earn points.';
+  }
+
+  /** What another try is worth, shown after a wrong answer when the student may try again. */
+  function retryAdvice(q, index) {
+    var left = attemptsLeft(index);
+    var prefix = isFinite(left) ? 'You have ' + plural(left, 'attempt') + ' left. ' : '';
+    var next = creditPercent(q, attemptsUsed(index) + 1);
+    if (next >= 100) return prefix + 'A correct answer on your next try still earns full points.';
+    if (next > 0) return prefix + 'A correct answer on your next try earns ' + next + '% of the points.';
+    if (q.retryScoring === 'ReducedCredit' || q.retryScoring === 'FullCredit') {
+      return prefix + 'You can try again for practice, but it won\'t earn points.';
+    }
+    return prefix + 'You can try again, but only your first answer counts toward your score.';
+  }
+
+  /**
+   * Fills the feedback box. context: { review, index, canRetry, retryCanEarn, lang, chosenFeedback }.
+   * The correct answer stays hidden while another try could still earn points.
+   */
+  function renderFeedback(box, q, result, context) {
+    var correct = result.correct;
     clear(box);
     box.className = 'feedback ' + (correct ? 'is-correct' : 'is-wrong');
-    var verdict = correct ? 'Correct!' : 'Not quite.';
-    if (context.scoredNow === false && !context.review) verdict += ' (Only your first attempt counts toward your score.)';
-    if (context.review) verdict = correct ? 'You answered this correctly.' : 'Your first answer was incorrect.';
-    box.appendChild(h('p', { className: 'verdict', text: verdict }));
+    box.appendChild(h('p', { className: 'verdict', text: context.review ? reviewVerdict(result) : answerVerdict(q, result) }));
 
     (context.chosenFeedback || []).forEach(function (f) {
       box.appendChild(h('p', { lang: context.lang, text: f.feedback }));
     });
 
-    var reveal = correct || settings.showCorrectAnswers;
+    var reveal = correct || (settings.showCorrectAnswers && !context.retryCanEarn);
     if (!correct && reveal) box.appendChild(h('p', { lang: context.lang, text: correctAnswerText(q) }));
     if (reveal && q.explanation) box.appendChild(h('p', { lang: context.lang, text: q.explanation }));
-    if (!correct && context.canRetry) {
-      box.appendChild(h('p', { text: 'You can try again, but only your first answer counts toward your score.' }));
+    if (context.review || correct) return;
+    if (context.canRetry) {
+      box.appendChild(h('p', { text: retryAdvice(q, context.index) }));
+    } else if (q.attemptsAllowed > 1) {
+      box.appendChild(h('p', { text: 'You\'ve used all ' + q.attemptsAllowed + ' attempts.' }));
     }
   }
 
-  function questionMeta(q) {
-    var p = pointsOf(q);
-    return 'At ' + clock(q.time) + ' · ' + plural(p, 'point');
+  /** "At 1:30 · 2 points", plus "Attempt 2 of 3" when attempt is given and retries are allowed. */
+  function questionMeta(q, attempt) {
+    var text = 'At ' + clock(q.time) + ' · ' + plural(pointsOf(q), 'point');
+    if (attempt && q.attemptsAllowed > 1) text += ' · Attempt ' + attempt + ' of ' + q.attemptsAllowed;
+    else if (attempt > 1) text += ' · Attempt ' + attempt;
+    return text;
   }
 
   function askQuestion(index) {
@@ -548,6 +657,7 @@
 
     var lang = data.language || null;
     var ui = buildAnswerForm(q, index, lang);
+    var meta = h('p', { className: 'meta', text: questionMeta(q, attemptsUsed(index) + 1) });
     var feedback = h('div', { className: 'feedback', 'aria-live': 'polite' });
     var actions = h('div', { className: 'actions' });
     var submit = h('button', { type: 'submit', className: 'button', text: 'Submit answer' });
@@ -573,20 +683,25 @@
       }
 
       var correct = grade(q, response);
-      var firstAttempt = results[index] === null;
-      if (firstAttempt) {
-        results[index] = { correct: correct, response: response };
-        reportProgress();
-        updateStatus();
-        renderMarkers();
-      }
+      var attempt = attemptsUsed(index) + 1;
+      results[index] = {
+        attempts: attempt,
+        correct: correct,
+        credit: correct ? creditPercent(q, attempt) : 0,
+        response: response
+      };
+      reportProgress();
+      updateStatus();
+      renderMarkers();
 
-      var canRetry = !correct && !!settings.allowRetry;
+      var canRetry = canTryAgain(index);
+      var earnMore = retryCanEarn(index);
       ui.setLocked(true);
-      ui.showMarks(correct, !!settings.showCorrectAnswers);
-      renderFeedback(feedback, q, correct, {
-        scoredNow: firstAttempt,
+      ui.showMarks(correct, !!settings.showCorrectAnswers && !earnMore);
+      renderFeedback(feedback, q, results[index], {
+        index: index,
         canRetry: canRetry,
+        retryCanEarn: earnMore,
         lang: lang,
         chosenFeedback: ui.chosenFeedback ? ui.chosenFeedback() : []
       });
@@ -600,6 +715,7 @@
             ui.setLocked(false);
             clear(feedback);
             feedback.className = 'feedback';
+            meta.textContent = questionMeta(q, attemptsUsed(index) + 1);
             showButtons([submit]);
             ui.first.focus();
           }
@@ -610,10 +726,7 @@
       continueButton.focus();
     });
 
-    openDialog('Question ' + (index + 1) + ' of ' + questions.length, [
-      h('p', { className: 'meta', text: questionMeta(q) }),
-      ui.form
-    ], { closable: false });
+    openDialog('Question ' + (index + 1) + ' of ' + questions.length, [meta, ui.form], { closable: false });
   }
 
   /** After Continue: next queued question, the summary, or back to the video. */
@@ -650,7 +763,7 @@
     ui.setLocked(true);
     if (result.response !== undefined) ui.showMarks(result.correct, !!settings.showCorrectAnswers);
     var feedback = h('div', { className: 'feedback' });
-    renderFeedback(feedback, q, result.correct, { review: true, lang: lang });
+    renderFeedback(feedback, q, result, { review: true, index: index, lang: lang });
     ui.form.appendChild(feedback);
 
     function done() {
@@ -673,10 +786,9 @@
     var answered = answeredCount();
     var body = [
       h('p', { className: 'summary-score', text: scorePercent() + '%' }),
-      h('p', { text: 'You earned ' + earnedPoints() + ' of ' + plural(totalPoints, 'point') + ' and answered ' +
+      h('p', { text: 'You earned ' + formatPoints(earnedPoints()) + ' of ' + plural(totalPoints, 'point') + ' and answered ' +
         answered + ' of ' + plural(questions.length, 'question') + '.' })
     ];
-
     if (allAnswered()) {
       var passing = Number(settings.passingScorePercent) || 0;
       body.push(h('p', { text: passed()
@@ -684,6 +796,12 @@
         : 'The passing score is ' + passing + '%.' }));
     } else {
       body.push(h('p', { text: 'Answer the remaining ' + plural(questions.length - answered, 'question') + ' to finish the lecture.' }));
+    }
+
+    var retryable = questions.filter(function (q, i) { return retryCanEarn(i); }).length;
+    if (retryable > 0) {
+      body.push(h('p', { text: 'You can still try ' + plural(retryable, 'question') + ' again for points: select ' +
+        (retryable === 1 ? 'it' : 'them') + ' on the timeline.' }));
     }
 
     if (!Scorm.isActive()) {
@@ -715,7 +833,7 @@
   // ---------------------------------------------------------------- status + timeline
 
   function updateStatus() {
-    dom.status.textContent = 'Score: ' + earnedPoints() + ' / ' + plural(totalPoints, 'point') +
+    dom.status.textContent = 'Score: ' + formatPoints(earnedPoints()) + ' / ' + plural(totalPoints, 'point') +
       ' (' + scorePercent() + '%) · ' + answeredCount() + ' of ' + questions.length + ' questions answered';
   }
 
@@ -732,17 +850,33 @@
     var span = timelineDuration();
     questions.forEach(function (q, i) {
       var r = results[i];
-      var state = r ? (r.correct ? 'answered correctly' : 'answered incorrectly') : 'not answered yet';
+      var state = 'not answered yet';
+      var look = '';
+      var glyph = String(i + 1);
+      if (r && r.credit >= 100) {
+        state = 'answered correctly';
+        look = ' is-correct';
+        glyph = '✓';
+      } else if (r && r.credit > 0) {
+        state = 'answered correctly for ' + r.credit + '% of the points';
+        look = ' is-partial';
+        glyph = '✓';
+      } else if (r) {
+        state = r.correct ? 'answered correctly for no points' : 'answered incorrectly';
+        look = ' is-wrong';
+        glyph = '✗';
+      }
+      var action = r ? (retryCanEarn(i) ? '. Try again' : '. Review') : '';
       var left = Math.min(100, Math.max(0, q.time / span * 100));
       var marker = h('button', {
         type: 'button',
-        className: 'marker' + (r ? (r.correct ? ' is-correct' : ' is-wrong') : ''),
+        className: 'marker' + look,
         'data-index': String(i),
         style: 'left:' + left.toFixed(3) + '%',
-        'aria-label': 'Question ' + (i + 1) + ' at ' + clock(q.time) + ', ' + state + (r ? '. Review' : ''),
+        'aria-label': 'Question ' + (i + 1) + ' at ' + clock(q.time) + ', ' + state + action,
         title: 'Question ' + (i + 1) + ' (' + clock(q.time) + ')',
         onclick: function () { onMarkerClick(i); }
-      }, [h('span', { 'aria-hidden': 'true', text: r ? (r.correct ? '✓' : '✗') : String(i + 1) })]);
+      }, [h('span', { 'aria-hidden': 'true', text: glyph })]);
       dom.markers.appendChild(marker);
     });
     if (focusedIndex !== null) {
@@ -753,7 +887,9 @@
 
   function onMarkerClick(index) {
     if (results[index]) {
-      reviewQuestion(index);
+      // A wrong answer with a try left that can still earn points is asked again; otherwise review it.
+      if (retryCanEarn(index)) askQuestion(index);
+      else reviewQuestion(index);
       return;
     }
     if (settings.preventSkippingAhead) {

@@ -39,6 +39,12 @@ public sealed class Question
 
     public int Points { get; set; } = 1;
 
+    /// <summary>Overrides <see cref="QuizSettings.AttemptsAllowed"/> for this question; null uses the quiz setting.</summary>
+    public int? AttemptsAllowed { get; set; }
+
+    /// <summary>Overrides <see cref="QuizSettings.RetryScoring"/> for this question; null uses the quiz setting.</summary>
+    public RetryScoring? RetryScoring { get; set; }
+
     /// <summary>Transcript excerpt the question was generated from, for instructor review.</summary>
     public string? SourceExcerpt { get; set; }
 

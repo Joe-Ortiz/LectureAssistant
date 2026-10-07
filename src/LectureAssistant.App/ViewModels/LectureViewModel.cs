@@ -9,6 +9,7 @@ using LectureAssistant.Core.Hardware;
 using LectureAssistant.Core.Models;
 using LectureAssistant.Core.Persistence;
 using LectureAssistant.Core.YouTube;
+using LectureAssistant.Export.H5P;
 using LectureAssistant.Transcription;
 
 namespace LectureAssistant.App.ViewModels;
@@ -80,7 +81,11 @@ public sealed partial class LectureViewModel(
     // Quiz settings
     [ObservableProperty] public partial double PassingScore { get; set; } = 70;
     [ObservableProperty] public partial bool PreventSkippingAhead { get; set; } = true;
-    [ObservableProperty] public partial bool AllowRetry { get; set; } = true;
+    /// <summary>Index into <see cref="AttemptChoices.AttemptNames"/>.</summary>
+    [ObservableProperty] public partial int AttemptsIndex { get; set; } = AttemptChoices.AttemptsIndex(AttemptRules.Unlimited);
+    /// <summary>Index into <see cref="AttemptChoices.ScoringNames"/>.</summary>
+    [ObservableProperty] public partial int RetryScoringIndex { get; set; } = AttemptChoices.ScoringIndex(RetryScoring.FirstAttemptOnly);
+    [ObservableProperty] public partial double RetryPenaltyPercent { get; set; } = AttemptRules.DefaultRetryPenaltyPercent;
     [ObservableProperty] public partial bool ShowCorrectAnswers { get; set; } = true;
 
     // Export
@@ -102,6 +107,11 @@ public sealed partial class LectureViewModel(
     public bool HasError => !string.IsNullOrEmpty(ErrorMessage);
     public bool HasSuccess => !string.IsNullOrEmpty(SuccessMessage);
     public string QuestionProviderText => questionGenerators.DescribeCurrent();
+    public IReadOnlyList<string> AttemptNames => AttemptChoices.AttemptNames;
+    public IReadOnlyList<string> RetryScoringNames => AttemptChoices.ScoringNames;
+    /// <summary>The penalty only matters when the quiz, or any question, uses reduced credit.</summary>
+    public bool ShowRetryPenalty =>
+        AttemptChoices.Scoring(RetryScoringIndex) == RetryScoring.ReducedCredit || Questions.Any(q => q.OverridesWithReducedCredit);
     public string H5PReferenceText => H5PReferencePackagePath is null
         ? "None: uses default library versions"
         : Path.GetFileName(H5PReferencePackagePath);
@@ -121,7 +131,9 @@ public sealed partial class LectureViewModel(
             SubjectIndex = IndexOfSubject(_project.SubjectArea ?? settings.Current.LastSubjectArea);
             PassingScore = _project.Quiz.PassingScorePercent;
             PreventSkippingAhead = _project.Quiz.PreventSkippingAhead;
-            AllowRetry = _project.Quiz.AllowRetry;
+            AttemptsIndex = AttemptChoices.AttemptsIndex(_project.Quiz.AttemptsAllowed);
+            RetryScoringIndex = AttemptChoices.ScoringIndex(_project.Quiz.RetryScoring);
+            RetryPenaltyPercent = _project.Quiz.RetryPenaltyPercent;
             ShowCorrectAnswers = _project.Quiz.ShowCorrectAnswers;
             ReplaceCaptions(_project.Captions);
             ReplaceQuestions(_project.Questions);
@@ -144,7 +156,10 @@ public sealed partial class LectureViewModel(
         {
             PassingScorePercent = Math.Clamp(double.IsNaN(PassingScore) ? 70 : PassingScore, 0, 100),
             PreventSkippingAhead = PreventSkippingAhead,
-            AllowRetry = AllowRetry,
+            AttemptsAllowed = AttemptChoices.Attempts(AttemptsIndex),
+            RetryScoring = AttemptChoices.Scoring(RetryScoringIndex),
+            RetryPenaltyPercent = (int)Math.Clamp(
+                Math.Round(double.IsNaN(RetryPenaltyPercent) ? AttemptRules.DefaultRetryPenaltyPercent : RetryPenaltyPercent), 1, 100),
             ShowCorrectAnswers = ShowCorrectAnswers,
         };
         return _project;
@@ -181,7 +196,9 @@ public sealed partial class LectureViewModel(
                 MarkDirty();
                 RefreshWordChecks();
                 break;
-            case nameof(Title) or nameof(PassingScore) or nameof(PreventSkippingAhead) or nameof(AllowRetry) or nameof(ShowCorrectAnswers):
+            case nameof(RetryScoringIndex): OnPropertyChanged(nameof(ShowRetryPenalty)); MarkDirty(); break;
+            case nameof(Title) or nameof(PassingScore) or nameof(PreventSkippingAhead) or nameof(AttemptsIndex) or nameof(RetryPenaltyPercent)
+                or nameof(ShowCorrectAnswers):
                 MarkDirty(); break;
         }
     }
@@ -532,7 +549,7 @@ public sealed partial class LectureViewModel(
     {
         var question = new QuestionViewModel(
             new Question { Timestamp = timestamp, Type = QuestionType.MultipleChoice },
-            RemoveQuestion, t => SeekRequested?.Invoke(t), MarkDirty);
+            RemoveQuestion, t => SeekRequested?.Invoke(t), OnQuestionChanged);
         int index = 0;
         while (index < Questions.Count && Questions[index].Timestamp <= timestamp) index++;
         Questions.Insert(index, question);
@@ -552,7 +569,7 @@ public sealed partial class LectureViewModel(
         Questions.Remove(question);
         OnPropertyChanged(nameof(HasQuestions));
         OnPropertyChanged(nameof(HasNoQuestions));
-        MarkDirty();
+        OnQuestionChanged();
     }
 
     // ---------- Publish ----------
@@ -578,6 +595,13 @@ public sealed partial class LectureViewModel(
             ErrorMessage = "Fix these before exporting:\n• " + string.Join("\n• ", problems);
             return;
         }
+
+        if (kind == "h5p" && H5PExporter.Warnings(project) is { Count: > 0 } warnings && ConfirmAsync is not null &&
+            !await ConfirmAsync(
+                "H5P can't match your retry settings",
+                string.Join("\n\n", warnings) + "\n\nThe SCORM package follows your settings exactly.",
+                "Export anyway"))
+            return;
 
         var path = await Pickers.SaveFileAsync(Pickers.SafeFileName(Title), exporter.DisplayName, exporter.FileExtension);
         if (path is null) return;
@@ -671,8 +695,16 @@ public sealed partial class LectureViewModel(
     private void ReplaceQuestions(IEnumerable<Question> questions)
     {
         Questions.Clear();
-        foreach (var q in questions) Questions.Add(new QuestionViewModel(q, RemoveQuestion, t => SeekRequested?.Invoke(t), MarkDirty));
+        foreach (var q in questions) Questions.Add(new QuestionViewModel(q, RemoveQuestion, t => SeekRequested?.Invoke(t), OnQuestionChanged));
         OnPropertyChanged(nameof(HasQuestions));
         OnPropertyChanged(nameof(HasNoQuestions));
+        OnPropertyChanged(nameof(ShowRetryPenalty));
+    }
+
+    /// <summary>A question was edited or removed.</summary>
+    private void OnQuestionChanged()
+    {
+        MarkDirty();
+        OnPropertyChanged(nameof(ShowRetryPenalty));
     }
 }
