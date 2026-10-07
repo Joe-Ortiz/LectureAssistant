@@ -25,9 +25,21 @@ public static partial class CaptionCleanup
             if (text.Length == 0) continue;
 
             foreach (var piece in Split(segment.Start, segment.End, text))
-                result.Add(new CaptionSegment(piece.Start, piece.End, WrapLines(piece.Text)));
+            {
+                result.Add(new CaptionSegment(piece.Start, piece.End, WrapLines(piece.Text))
+                {
+                    UncertainWords = WordsIn(segment.UncertainWords, piece.Text),
+                });
+            }
         }
         return result;
+    }
+
+    /// <summary>The uncertain words that ended up in this piece of a split segment; null when there are none.</summary>
+    private static List<string>? WordsIn(List<string>? words, string text)
+    {
+        var kept = words?.Where(w => CaptionCorrections.Count(text, w) > 0).ToList();
+        return kept is { Count: > 0 } ? kept : null;
     }
 
     /// <summary>Splits text longer than two lines into consecutive captions, dividing the time by character count.</summary>

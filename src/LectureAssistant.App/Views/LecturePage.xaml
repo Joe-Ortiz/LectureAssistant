@@ -130,9 +130,12 @@
                             <TextBlock Text="Generate captions" Style="{StaticResource SubtitleTextBlockStyle}" />
                             <TextBlock TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}"
                                        Text="Speech recognition runs on this PC, so the recording stays private. The first run downloads the speech model." />
-                            <TextBox Header="Names and terms used in this lecture (optional)"
-                                     PlaceholderText="e.g. Schrödinger, eigenvalue, Dr. Okonkwo, CRISPR-Cas9"
-                                     Text="{x:Bind ViewModel.Vocabulary, Mode=TwoWay}" TextWrapping="Wrap" />
+                            <StackPanel Spacing="4">
+                                <ComboBox Header="Subject area" ItemsSource="{x:Bind vm:LectureViewModel.SubjectNames}"
+                                          SelectedIndex="{x:Bind ViewModel.SubjectIndex, Mode=TwoWay}" MinWidth="260" />
+                                <TextBlock TextWrapping="Wrap" Style="{StaticResource CaptionTextBlockStyle}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                           Text="Helps spell the terms of your field correctly. Names and terms in your dictionary (in Settings) are used too." />
+                            </StackPanel>
                             <StackPanel Orientation="Horizontal" Spacing="8">
                                 <Button Style="{StaticResource AccentButtonStyle}" Command="{x:Bind ViewModel.TranscribeCommand}"
                                         IsEnabled="{x:Bind ViewModel.IsNotBusy, Mode=OneWay}" Content="Generate captions" />
@@ -144,16 +147,93 @@
                     <Grid Visibility="{x:Bind ViewModel.HasCaptions, Mode=OneWay}" RowSpacing="8" Grid.RowSpan="2">
                         <Grid.RowDefinitions>
                             <RowDefinition Height="Auto" />
+                            <RowDefinition Height="Auto" />
                             <RowDefinition Height="*" />
                         </Grid.RowDefinitions>
                         <CommandBar DefaultLabelPosition="Right" HorizontalAlignment="Left" IsDynamicOverflowEnabled="True">
                             <AppBarButton Icon="Save" Label="Save .srt" Command="{x:Bind ViewModel.ExportCaptionsCommand}" CommandParameter="srt" />
                             <AppBarButton Icon="Save" Label="Save .vtt" Command="{x:Bind ViewModel.ExportCaptionsCommand}" CommandParameter="vtt" />
                             <AppBarButton Icon="OpenFile" Label="Import" Command="{x:Bind ViewModel.ImportCaptionsCommand}" />
-                            <AppBarButton Icon="Refresh" Label="Regenerate" Command="{x:Bind ViewModel.TranscribeCommand}"
-                                          IsEnabled="{x:Bind ViewModel.IsNotBusy, Mode=OneWay}" />
+                            <AppBarButton Icon="Refresh" Label="Regenerate" IsEnabled="{x:Bind ViewModel.IsNotBusy, Mode=OneWay}">
+                                <AppBarButton.Flyout>
+                                    <Flyout x:Name="RegenerateFlyout">
+                                        <StackPanel Spacing="12" MaxWidth="340">
+                                            <TextBlock TextWrapping="Wrap"
+                                                       Text="Create the captions again from the video. This replaces the current captions, including your edits." />
+                                            <ComboBox Header="Subject area" ItemsSource="{x:Bind vm:LectureViewModel.SubjectNames}"
+                                                      SelectedIndex="{x:Bind ViewModel.SubjectIndex, Mode=TwoWay}" HorizontalAlignment="Stretch" />
+                                            <Button Style="{StaticResource AccentButtonStyle}" Content="Regenerate captions"
+                                                    Command="{x:Bind ViewModel.TranscribeCommand}" Click="Regenerate_Click" />
+                                        </StackPanel>
+                                    </Flyout>
+                                </AppBarButton.Flyout>
+                            </AppBarButton>
                         </CommandBar>
-                        <ListView Grid.Row="1" ItemsSource="{x:Bind ViewModel.Captions}" SelectionMode="None">
+
+                        <!-- Quick corrections -->
+                        <Expander Grid.Row="1" Header="{x:Bind ViewModel.WordChecksHeader, Mode=OneWay}"
+                                  HorizontalAlignment="Stretch" HorizontalContentAlignment="Stretch">
+                            <ScrollViewer MaxHeight="360" Padding="0,0,12,0">
+                                <StackPanel Spacing="12">
+                                    <TextBlock TextWrapping="Wrap" Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                               Text="Fix a word everywhere it appears in this lecture. Words you save to your dictionary are fixed automatically in future lectures." />
+
+                                    <StackPanel Spacing="6">
+                                        <Grid ColumnSpacing="8">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <TextBox Header="Find" PlaceholderText="e.g. cooper netties"
+                                                     Text="{x:Bind ViewModel.FindText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                            <TextBox Grid.Column="1" Header="Replace with" PlaceholderText="e.g. Kubernetes"
+                                                     Text="{x:Bind ViewModel.ReplaceText, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                            <Button Grid.Column="2" VerticalAlignment="Bottom" Content="Replace all"
+                                                    Command="{x:Bind ViewModel.ReplaceEverywhereCommand}" />
+                                        </Grid>
+                                        <CheckBox Content="Remember in my dictionary" IsChecked="{x:Bind ViewModel.RememberReplacement, Mode=TwoWay}" />
+                                    </StackPanel>
+
+                                    <TextBlock Text="Words to check" Style="{StaticResource BodyStrongTextBlockStyle}" />
+                                    <TextBlock Visibility="{x:Bind ViewModel.HasNoWordChecks, Mode=OneWay}" TextWrapping="Wrap"
+                                               Foreground="{ThemeResource TextFillColorSecondaryBrush}"
+                                               Text="Nothing stands out. You can still find and replace any word above." />
+                                    <ItemsControl ItemsSource="{x:Bind ViewModel.WordChecks}">
+                                        <ItemsControl.ItemContainerTransitions>
+                                            <TransitionCollection />
+                                        </ItemsControl.ItemContainerTransitions>
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate x:DataType="vm:WordCheckViewModel">
+                                                <StackPanel Spacing="4" Margin="0,0,0,14">
+                                                    <TextBlock TextWrapping="Wrap">
+                                                        <Run Text="{x:Bind Word}" FontWeight="SemiBold" />
+                                                        <Run Text="  " />
+                                                        <Run Text="{x:Bind Detail}" Foreground="{ThemeResource TextFillColorSecondaryBrush}" FontSize="12" />
+                                                    </TextBlock>
+                                                    <Grid ColumnSpacing="8">
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="*" />
+                                                            <ColumnDefinition Width="Auto" />
+                                                            <ColumnDefinition Width="Auto" />
+                                                        </Grid.ColumnDefinitions>
+                                                        <TextBox Text="{x:Bind Replacement, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                                 PlaceholderText="Correct spelling" AutomationProperties.Name="Correct spelling" />
+                                                        <Button Grid.Column="1" Content="Replace all" Command="{x:Bind ApplyCommand}"
+                                                                ToolTipService.ToolTip="Replace it everywhere in this lecture's captions" />
+                                                        <Button Grid.Column="2" Content="It's correct" Command="{x:Bind KeepCommand}"
+                                                                ToolTipService.ToolTip="It's spelled right; stop listing it" />
+                                                    </Grid>
+                                                    <CheckBox Content="Remember in my dictionary" IsChecked="{x:Bind Remember, Mode=TwoWay}" />
+                                                </StackPanel>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </StackPanel>
+                            </ScrollViewer>
+                        </Expander>
+
+                        <ListView Grid.Row="2" ItemsSource="{x:Bind ViewModel.Captions}" SelectionMode="None">
                             <ListView.ItemTemplate>
                                 <DataTemplate x:DataType="vm:CaptionViewModel">
                                     <Grid ColumnSpacing="8" Padding="0,4">

@@ -19,6 +19,7 @@ public sealed partial class LectureViewModel(
     ITranscriber transcriber,
     WhisperModelManager whisperModels,
     SettingsService settings,
+    DictionaryService dictionary,
     QuestionGeneratorFactory questionGenerators,
     ModelDownloadService modelDownloads,
     ExporterCatalog exporters) : ObservableObject
@@ -33,6 +34,11 @@ public sealed partial class LectureViewModel(
 
     public ObservableCollection<CaptionViewModel> Captions { get; } = [];
     public ObservableCollection<QuestionViewModel> Questions { get; } = [];
+
+    /// <summary>Words in the captions that may be misspelled, for quick fixing.</summary>
+    public ObservableCollection<WordCheckViewModel> WordChecks { get; } = [];
+
+    public static IReadOnlyList<string> SubjectNames { get; } = SubjectAreas.All.Select(s => s.DisplayName).ToList();
 
     /// <summary>Raised when the view should move the video preview to a time.</summary>
     public event Action<TimeSpan>? SeekRequested;
@@ -56,7 +62,12 @@ public sealed partial class LectureViewModel(
     [ObservableProperty] public partial string? SuccessMessage { get; set; }
 
     // Transcription
-    [ObservableProperty] public partial string Vocabulary { get; set; } = "";
+    [ObservableProperty] public partial int SubjectIndex { get; set; }
+
+    // Quick corrections
+    [ObservableProperty] public partial string FindText { get; set; } = "";
+    [ObservableProperty] public partial string ReplaceText { get; set; } = "";
+    [ObservableProperty] public partial bool RememberReplacement { get; set; } = true;
 
     // Question generation
     [ObservableProperty] public partial double QuestionCount { get; set; } = settings.Current.DefaultQuestionCount;
@@ -78,6 +89,14 @@ public sealed partial class LectureViewModel(
     public bool IsNotBusy => !IsBusy;
     public bool HasCaptions => Captions.Count > 0;
     public bool HasNoCaptions => Captions.Count == 0;
+    public bool HasNoWordChecks => WordChecks.Count == 0;
+    public string WordChecksHeader => WordChecks.Count switch
+    {
+        0 => "Fix misheard words",
+        1 => "Fix misheard words · 1 word to check",
+        var n => $"Fix misheard words · {n} words to check",
+    };
+    private SubjectArea Subject => SubjectIndex >= 0 && SubjectIndex < SubjectAreas.All.Count ? SubjectAreas.All[SubjectIndex] : SubjectAreas.General;
     public bool HasQuestions => Questions.Count > 0;
     public bool HasNoQuestions => Questions.Count == 0;
     public bool HasError => !string.IsNullOrEmpty(ErrorMessage);
@@ -99,6 +118,7 @@ public sealed partial class LectureViewModel(
             YouTubeUrl = _project.YouTubeUrl ?? "";
             VideoPath = _project.SourceVideoPath;
             DurationText = _project.Duration is { } d ? TimeText.Format(d) : "";
+            SubjectIndex = IndexOfSubject(_project.SubjectArea ?? settings.Current.LastSubjectArea);
             PassingScore = _project.Quiz.PassingScorePercent;
             PreventSkippingAhead = _project.Quiz.PreventSkippingAhead;
             AllowRetry = _project.Quiz.AllowRetry;
@@ -117,6 +137,7 @@ public sealed partial class LectureViewModel(
     {
         _project.Title = Title.Trim();
         _project.YouTubeUrl = string.IsNullOrWhiteSpace(YouTubeUrl) ? null : YouTubeUrl.Trim();
+        _project.SubjectArea = Subject.Id;
         _project.Captions = Captions.Select(c => c.ToModel()).ToList();
         _project.Questions = Questions.Select(q => q.ToModel()).OrderBy(q => q.Timestamp).ToList();
         _project.Quiz = new QuizSettings
@@ -153,6 +174,13 @@ public sealed partial class LectureViewModel(
             case nameof(SuccessMessage): OnPropertyChanged(nameof(HasSuccess)); break;
             case nameof(H5PReferencePackagePath): OnPropertyChanged(nameof(H5PReferenceText)); break;
             case nameof(YouTubeUrl): UpdateYouTubeStatus(); MarkDirty(); break;
+            case nameof(SubjectIndex) when !_loading && SubjectIndex >= 0:
+                // Instructors tend to teach one subject, so the latest choice becomes the default for new lectures.
+                settings.Current.LastSubjectArea = Subject.Id;
+                settings.Save();
+                MarkDirty();
+                RefreshWordChecks();
+                break;
             case nameof(Title) or nameof(PassingScore) or nameof(PreventSkippingAhead) or nameof(AllowRetry) or nameof(ShowCorrectAnswers):
                 MarkDirty(); break;
         }
@@ -211,10 +239,11 @@ public sealed partial class LectureViewModel(
 
                 BusyText = "Transcribing (this runs on your PC and can take a while for long lectures)…";
                 Progress = 0;
+                var language = settings.Current.TranscriptionLanguage;
                 var options = new TranscriptionOptions
                 {
-                    Language = settings.Current.TranscriptionLanguage,
-                    Vocabulary = string.IsNullOrWhiteSpace(Vocabulary) ? null : Vocabulary,
+                    Language = language,
+                    Vocabulary = RecognitionPrompt.Build(Subject, dictionary.Current.TermsByRecency(), language),
                 };
                 // Created here, on the UI thread, so reports are marshalled back to it.
                 var transcriptionProgress = new Progress<TranscriptionProgress>(p =>
@@ -225,11 +254,18 @@ public sealed partial class LectureViewModel(
                 var segments = await Task.Run(() => transcriber.TranscribeAsync(wavPath, options, transcriptionProgress, ct), ct);
                 var ranOn = RememberRun(transcriber, model.DisplayName.Split(" (")[0] + " speech model", run => settings.Current.LastTranscriptionRun = run);
 
+                int fixedWords = dictionary.Current.ApplyTo(segments);
+                dictionary.Save();
+
                 ReplaceCaptions(segments);
                 CaptionsReplaced?.Invoke();
                 _dirty = true;
                 await SaveIfDirtyAsync();
-                SuccessMessage = $"Created {segments.Count} captions. Review names and technical terms before publishing.";
+                SuccessMessage = $"Created {segments.Count} captions."
+                    + (fixedWords switch { 0 => "", 1 => " Fixed 1 word using your dictionary.", _ => $" Fixed {fixedWords} words using your dictionary." })
+                    + (WordChecks.Count > 0
+                        ? " Open \"Fix misheard words\" to check the words listed there, and review names and technical terms before publishing."
+                        : " Review names and technical terms before publishing.");
                 if (ranOn.Length > 0) SuccessMessage += $" Transcribed {ranOn}.";
             }
             finally
@@ -279,6 +315,95 @@ public sealed partial class LectureViewModel(
 
     /// <summary>Current captions as WebVTT, for the preview player.</summary>
     public string CaptionsAsWebVtt() => CaptionFormats.ToWebVtt(Captions.Select(c => c.ToModel()));
+
+    // ---------- Quick corrections ----------
+
+    [RelayCommand]
+    private void ReplaceEverywhere()
+    {
+        if (string.IsNullOrWhiteSpace(FindText) || string.IsNullOrWhiteSpace(ReplaceText)) return;
+        if (FixWord(FindText, ReplaceText, RememberReplacement))
+        {
+            FindText = "";
+            ReplaceText = "";
+        }
+    }
+
+    private void ApplyWordCheck(WordCheckViewModel row)
+    {
+        if (string.IsNullOrWhiteSpace(row.Replacement)) return;
+        FixWord(row.Word, row.Replacement, row.Remember);
+    }
+
+    private void KeepWordCheck(WordCheckViewModel row)
+    {
+        if (row.Remember)
+        {
+            dictionary.Current.AddTerm(row.Word);
+            dictionary.Save();
+        }
+        WordChecks.Remove(row);
+        OnWordChecksChanged();
+    }
+
+    /// <summary>Replaces every whole-word occurrence across all captions. Returns false when nothing was replaced or remembered.</summary>
+    private bool FixWord(string find, string replacement, bool remember)
+    {
+        find = CaptionCorrections.NormalizeSpaces(find);
+        replacement = CaptionCorrections.NormalizeSpaces(replacement);
+
+        var models = Captions.Select(c => c.ToModel()).ToList();
+        int changed = CaptionCorrections.Apply(models, find, replacement);
+        for (int i = 0; i < models.Count; i++)
+        {
+            if (models[i].Text != Captions[i].Text.Trim()) Captions[i].Text = models[i].Text;
+        }
+
+        if (remember)
+        {
+            dictionary.Current.AddCorrection(find, replacement);
+            dictionary.Save();
+        }
+
+        ErrorMessage = null;
+        SuccessMessage = changed switch
+        {
+            0 when CaptionCorrections.Count(models, find) > 0 => $"\"{find}\" is already spelled that way." + (remember ? " Saved in your dictionary." : ""),
+            0 => $"\"{find}\" isn't in the captions." + (remember ? " Saved in your dictionary for future lectures." : ""),
+            1 => $"Replaced \"{find}\" with \"{replacement}\" in 1 place.",
+            _ => $"Replaced \"{find}\" with \"{replacement}\" in {changed} places.",
+        };
+        RefreshWordChecks();
+        if (changed > 0) CaptionsReplaced?.Invoke();
+        return changed > 0 || remember;
+    }
+
+    private void RefreshWordChecks()
+    {
+        WordChecks.Clear();
+        if (Captions.Count > 0)
+        {
+            // Words from the dictionary or the subject's example sentence are already spelled the way the instructor wants.
+            var captions = Captions.Select(c => c.ToModel()).ToList();
+            var subjectPrompt = Subject.Prompt;
+            bool IsKnown(string word) => dictionary.Current.IsKnownTerm(word) || CaptionCorrections.Count(subjectPrompt, word) > 0;
+            foreach (var word in WordsToCheck.Find(captions, IsKnown))
+                WordChecks.Add(new WordCheckViewModel(word, ApplyWordCheck, KeepWordCheck));
+        }
+        OnWordChecksChanged();
+    }
+
+    private void OnWordChecksChanged()
+    {
+        OnPropertyChanged(nameof(HasNoWordChecks));
+        OnPropertyChanged(nameof(WordChecksHeader));
+    }
+
+    private static int IndexOfSubject(string? id)
+    {
+        var subject = SubjectAreas.Find(id);
+        return SubjectAreas.All.ToList().IndexOf(subject);
+    }
 
     // ---------- Questions ----------
 
@@ -540,6 +665,7 @@ public sealed partial class LectureViewModel(
         foreach (var s in segments) Captions.Add(new CaptionViewModel(s, t => SeekRequested?.Invoke(t), MarkDirty));
         OnPropertyChanged(nameof(HasCaptions));
         OnPropertyChanged(nameof(HasNoCaptions));
+        RefreshWordChecks();
     }
 
     private void ReplaceQuestions(IEnumerable<Question> questions)
