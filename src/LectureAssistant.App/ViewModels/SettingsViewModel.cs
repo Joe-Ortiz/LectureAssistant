@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using LectureAssistant.App.Services;
+using LectureAssistant.Core.Captions;
 using LectureAssistant.Core.Downloads;
 using LectureAssistant.QuestionGeneration.Local;
 using LectureAssistant.Transcription;
@@ -30,6 +31,17 @@ public sealed partial class LocalModelOption(LocalModelInfo info, bool recommend
     [ObservableProperty] public partial string Status { get; set; } = "";
 }
 
+public sealed partial class DictionaryEntryViewModel(DictionaryEntry entry, Action<DictionaryEntryViewModel> remove)
+{
+    public DictionaryEntry Entry { get; } = entry;
+    public string Term => Entry.Term;
+    public string Detail => Entry.IsCorrection ? $"Replaces “{Entry.Heard}”" : "";
+    public bool HasDetail => Entry.IsCorrection;
+
+    [RelayCommand]
+    private void Remove() => remove(this);
+}
+
 public sealed partial class SettingsViewModel : ObservableObject
 {
     private const int LocalIndex = 0, ClaudeIndex = 1;
@@ -38,6 +50,7 @@ public sealed partial class SettingsViewModel : ObservableObject
     private readonly SecretStore _secrets;
     private readonly WhisperModelManager _whisperModels;
     private readonly QuestionGeneratorFactory _generators;
+    private readonly DictionaryService _dictionary;
     private readonly bool _initialized;
     private CancellationTokenSource? _whisperDownload;
 
@@ -45,6 +58,7 @@ public sealed partial class SettingsViewModel : ObservableObject
 
     public ObservableCollection<WhisperModelOption> WhisperModelOptions { get; } = [];
     public ObservableCollection<LocalModelOption> LocalModelOptions { get; } = [];
+    public ObservableCollection<DictionaryEntryViewModel> DictionaryEntries { get; } = [];
 
     public static IReadOnlyList<string> Languages { get; } =
         ["auto", "en", "es", "fr", "de", "it", "pt", "nl", "pl", "zh", "ja", "ko", "ar", "hi", "ru", "uk", "tr", "vi"];
@@ -55,6 +69,9 @@ public sealed partial class SettingsViewModel : ObservableObject
     [ObservableProperty] public partial bool IsDownloadingWhisper { get; set; }
     [ObservableProperty] public partial double WhisperDownloadProgress { get; set; }
     [ObservableProperty] public partial string? WhisperDownloadError { get; set; }
+
+    // Personal dictionary
+    [ObservableProperty] public partial string NewTerm { get; set; } = "";
 
     // Question provider: 0 = on this PC, 1 = Claude
     [ObservableProperty] public partial int ProviderIndex { get; set; }
@@ -81,6 +98,7 @@ public sealed partial class SettingsViewModel : ObservableObject
     public bool CanDownloadSelected => !SelectedModelDownloaded && !Downloads.IsDownloading;
     public bool HasSelectedModelWarning => !string.IsNullOrEmpty(SelectedModelWarning);
     public string LocalModelText => LocalModelPath ?? "No file chosen";
+    public bool HasNoDictionaryEntries => DictionaryEntries.Count == 0;
     public string HardwareText { get; }
 
     private LocalModelInfo? SelectedLocalModel =>
@@ -91,13 +109,16 @@ public sealed partial class SettingsViewModel : ObservableObject
         SecretStore secrets,
         WhisperModelManager whisperModels,
         QuestionGeneratorFactory generators,
-        ModelDownloadService downloads)
+        ModelDownloadService downloads,
+        DictionaryService dictionary)
     {
         _settings = settings;
         _secrets = secrets;
         _whisperModels = whisperModels;
         _generators = generators;
+        _dictionary = dictionary;
         Downloads = downloads;
+        RefreshDictionary();
 
         var current = settings.Current;
         foreach (var model in WhisperModels.All) WhisperModelOptions.Add(new WhisperModelOption(model, whisperModels.IsDownloaded(model)));
@@ -282,4 +303,31 @@ public sealed partial class SettingsViewModel : ObservableObject
 
     [RelayCommand]
     private void CancelWhisperDownload() => _whisperDownload?.Cancel();
+
+    [RelayCommand]
+    private void AddTerm()
+    {
+        if (_dictionary.Current.AddTerm(NewTerm) is null) return;
+        _dictionary.Save();
+        NewTerm = "";
+        RefreshDictionary();
+    }
+
+    private void RemoveEntry(DictionaryEntryViewModel entry)
+    {
+        _dictionary.Current.Remove(entry.Entry);
+        _dictionary.Save();
+        DictionaryEntries.Remove(entry);
+        OnPropertyChanged(nameof(HasNoDictionaryEntries));
+    }
+
+    private void RefreshDictionary()
+    {
+        DictionaryEntries.Clear();
+        var entries = _dictionary.Current.Entries
+            .OrderBy(e => e.Term, StringComparer.CurrentCultureIgnoreCase)
+            .ThenBy(e => e.Heard, StringComparer.CurrentCultureIgnoreCase);
+        foreach (var entry in entries) DictionaryEntries.Add(new DictionaryEntryViewModel(entry, RemoveEntry));
+        OnPropertyChanged(nameof(HasNoDictionaryEntries));
+    }
 }

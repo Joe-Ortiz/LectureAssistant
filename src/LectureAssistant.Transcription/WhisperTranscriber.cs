@@ -24,6 +24,8 @@ public sealed class WhisperTranscriber(Func<string> modelPathProvider) : ITransc
         using var factory = WhisperFactory.FromPath(modelPath, new WhisperFactoryOptions { UseGpu = true });
         var builder = factory.CreateBuilder()
             .WithThreads(Math.Max(1, Environment.ProcessorCount - 1))
+            // Per-token probabilities, so the instructor can be pointed at the words recognition was unsure of.
+            .WithProbabilities()
             .WithProgressHandler(percent =>
             {
                 lastFraction = percent / 100.0;
@@ -42,7 +44,9 @@ public sealed class WhisperTranscriber(Func<string> modelPathProvider) : ITransc
 
         await foreach (var result in processor.ProcessAsync(audio, cancellationToken))
         {
-            var segment = new CaptionSegment(result.Start, result.End, result.Text.Trim());
+            var text = result.Text.Trim();
+            var uncertain = WordsToCheck.FindUnsure((result.Tokens ?? []).Select(t => (t.Text ?? "", t.Probability)), text);
+            var segment = new CaptionSegment(result.Start, result.End, text) { UncertainWords = uncertain.Count > 0 ? uncertain : null };
             segments.Add(segment);
             progress?.Report(new TranscriptionProgress(lastFraction, segment));
         }

@@ -44,6 +44,7 @@ public partial class App : Application
 
         services.AddSingleton<SettingsService>();
         services.AddSingleton<SecretStore>();
+        services.AddSingleton<DictionaryService>();
         services.AddSingleton(_ => new ProjectStore(AppPaths.Projects));
         services.AddSingleton(_ => new WhisperModelManager(AppPaths.WhisperModels));
         services.AddSingleton<IAudioExtractor, WindowsAudioExtractor>();

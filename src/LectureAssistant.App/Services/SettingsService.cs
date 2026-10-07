@@ -14,6 +14,9 @@ public sealed class AppSettings
     public string? WhisperModelId { get; set; }
     public string TranscriptionLanguage { get; set; } = "auto";
 
+    /// <summary>Subject area picked most recently; the default for new lectures.</summary>
+    public string? LastSubjectArea { get; set; }
+
     /// <summary>Local by default: works without an account, and nothing leaves the PC.</summary>
     public QuestionProvider QuestionProvider { get; set; } = QuestionProvider.LocalModel;
     public string ClaudeModel { get; set; } = "claude-opus-5";
