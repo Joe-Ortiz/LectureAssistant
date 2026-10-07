@@ -31,6 +31,15 @@ A Windows desktop app (Microsoft Store, .NET 10 + WinUI 3) that helps instructor
 
 Both are Apache 2.0 licensed (Qwen team, Alibaba Cloud). Files are downloaded from Hugging Face, pinned to a specific commit in `LocalModelCatalog.cs`. Measured on an RTX 3070 with a 4-minute lecture and 6 questions: Standard took 19 s and Best took 34 s after the one-time GPU warm-up. To add or swap models, add an entry to `LocalModelCatalog` with its commit-pinned URL, byte size and SHA-256. Check first that the bundled LLamaSharp (llama.cpp) version supports the model's architecture.
 
+### Where does the model run: graphics card or processor?
+
+Settings says so before anything runs, and again after each run:
+
+- **Before**: a line such as "Runs on your graphics card (NVIDIA GeForce RTX 3070, 8 GB video memory). Fast." or "Runs on the processor using system memory (16 GB) … Slower: expect a few minutes per lecture." It's predicted (`DeviceForecasts`) from the graphics card and memory Windows reports, the model's memory needs (estimated from the file size for a custom `.gguf`) and the GPU layers setting (0 = processor). Built-in graphics (Intel UHD/Iris, Ryzen Radeon) share system memory, so for those it says "if it can, otherwise the processor" and promises no speed.
+- **During and after**: once a model loads, the app reads the runtime's log (llama.cpp's "offloaded 37/37 layers to GPU", whisper.cpp's "using Vulkan0 backend") and which native build loaded (`GgmlLog`). While questions are written it shows "Running on your graphics card (…)" or "Running on the processor (no graphics card was usable)" under the progress bar. The finished message for captions and questions says where they ran and how long it took, and Settings shows "Last run: Standard model on your graphics card (…), 34 seconds."
+
+A question model goes onto the graphics card whole or not at all. If the card can't hold it or the driver fails, the app retries on the processor automatically and says so ("the graphics card couldn't run it").
+
 ## Solution layout
 
 ```
