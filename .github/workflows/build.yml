@@ -1,0 +1,62 @@
+name: Build and test
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A new push to a pull request cancels the run that's still going for the previous push.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_NOLOGO: true
+  DOTNET_CLI_TELEMETRY_OPTOUT: true
+  NUGET_PACKAGES: ${{ github.workspace }}/.nuget/packages
+
+jobs:
+  build-and-test:
+    # Keep this name stable: branch protection requires the check by name.
+    name: Build and test
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+
+      # The local-model runtime (LLamaSharp backends) and Windows App SDK packages are large; restore them from cache.
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.NUGET_PACKAGES }}
+          key: nuget-${{ runner.os }}-${{ hashFiles('Directory.Packages.props', '**/*.csproj') }}
+          restore-keys: nuget-${{ runner.os }}-
+
+      # Builds every project in the solution (including the app for x64) and runs the unit tests.
+      # Tests that call the Claude API skip themselves because no API key is configured here.
+      - name: Test
+        run: dotnet test LectureAssistant.slnx -c Release --logger trx --results-directory TestResults
+
+      # The Store package ships for both architectures, so make sure the app compiles for each.
+      - name: Build app (x64)
+        run: dotnet build src/LectureAssistant.App -c Release -p:Platform=x64
+
+      - name: Build app (ARM64)
+        run: dotnet build src/LectureAssistant.App -c Release -p:Platform=ARM64
+
+      - name: Upload test results
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: TestResults/*.trx
+          if-no-files-found: ignore
