@@ -18,7 +18,7 @@ A Windows desktop app (Microsoft Store, .NET 10 + WinUI 3) that helps instructor
 | SCORM as the primary export | Canvas's SCORM tool gives real student identity and gradebook passback with zero infrastructure. LTI 1.3 is the long-term upgrade (see Roadmap). |
 | Local Whisper (Whisper.net) | Free, private, offline. Uses the GPU through Vulkan when present. Models download on first use (they're too large for the MSIX). |
 | Audio via Media Foundation | Windows decodes the video; no FFmpeg to bundle or license. |
-| Local model by default, Claude optional | Works with no account and nothing leaves the PC. The app picks a model for the PC's hardware, downloads it once (resumable, SHA-256 verified), and runs it with LLamaSharp on the GPU through Vulkan. It falls back to the CPU automatically, and output is grammar-constrained JSON. Instructors who want the best quality can use their own Anthropic API key instead, stored in Windows Credential Locker; a Store app can't safely contain one of ours. |
+| Local model by default, Claude optional | Works with no account and nothing leaves the PC. The app picks a model for the PC's hardware, downloads it once (resumable, SHA-256 verified), and runs it with LLamaSharp on the GPU through Vulkan. If video memory is short it uses a smaller context window (more, shorter transcript sections), then falls back to the CPU automatically, and output is grammar-constrained JSON. Instructors who want the best quality can use their own Anthropic API key instead, stored in Windows Credential Locker; a Store app can't safely contain one of ours. |
 
 ### Built-in local models
 
