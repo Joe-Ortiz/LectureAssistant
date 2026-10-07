@@ -516,10 +516,32 @@ public sealed partial class LectureViewModel(
 
             ProgressIndeterminate = true;
             var generator = questionGenerators.Create();
+            // The live line shows the time left and, for the local model, where it's running.
+            string timeLeft = "", runningOn = "";
+            void ShowLiveText() => LiveText = string.Join(" ", new[] { timeLeft.Length > 0 ? timeLeft + "." : "", runningOn }.Where(s => s.Length > 0));
             if (generator is QuestionGeneration.Local.LocalLlmQuestionGenerator local)
-                local.DeviceProgress = new Progress<ComputeDeviceReport>(device => LiveText = device.StatusText);
-            var generationProgress = new Progress<string>(s => BusyText = s);
-            var generated = await Task.Run(() => generator.GenerateAsync(request, generationProgress, ct), ct);
+                local.DeviceProgress = new Progress<ComputeDeviceReport>(device => { runningOn = device.StatusText; ShowLiveText(); });
+
+            // Created here, on the UI thread, so reports are marshalled back to it. The generators throttle them.
+            bool finished = false;
+            var generationProgress = new Progress<QuestionGenerationProgress>(p =>
+            {
+                if (finished) return; // a report still queued when generation ended
+                BusyText = p.Message;
+                timeLeft = p.TimeLeft ?? "";
+                ShowLiveText();
+                if (p.Fraction is { } fraction) Progress = fraction * 100;
+                ProgressIndeterminate = p.Fraction is null;
+            });
+            IReadOnlyList<Question> generated;
+            try
+            {
+                generated = await Task.Run(() => generator.GenerateAsync(request, generationProgress, ct), ct);
+            }
+            finally
+            {
+                finished = true;
+            }
             if (generator is IDisposable disposable) disposable.Dispose();
             var modelName = questionGenerators.SelectedLocalModel is { } builtIn
                 ? builtIn.DisplayName + " model"

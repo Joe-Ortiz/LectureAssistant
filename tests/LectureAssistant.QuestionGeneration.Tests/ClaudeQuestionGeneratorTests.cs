@@ -108,6 +108,99 @@ public class ClaudeQuestionGeneratorTests
         Assert.Null(ClaudeQuestionGenerator.Translate(new InvalidOperationException(), CancellationToken.None));
     }
 
+    [Fact]
+    public async Task Streamed_answer_is_assembled_and_questions_are_counted_as_they_arrive()
+    {
+        var json = QuestionProgressTrackerTests.QuestionsJson(3);
+        var events = new List<string>
+        {
+            """{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-opus-5","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":1}}}""",
+            """{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}""",
+            """{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Plan: {three} questions"}}""",
+            """{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig"}}""",
+            """{"type":"content_block_stop","index":0}""",
+            """{"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}""",
+        };
+        // Text in uneven chunks, like the API sends.
+        for (int i = 0; i < json.Length; i += 37)
+            events.Add(JsonSerializer.Serialize(new { type = "content_block_delta", index = 1, delta = new { type = "text_delta", text = json.Substring(i, Math.Min(37, json.Length - i)) } }));
+        events.Add("""{"type":"content_block_stop","index":1}""");
+        events.Add("""{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":500}}""");
+        events.Add("""{"type":"message_stop"}""");
+
+        var reports = new List<Core.QuestionGenerationProgress>();
+        int seen = 0;
+        var message = await ClaudeQuestionGenerator.ReadStreamAsync(
+            Events(events), 3, new SyncProgress(reports), () => seen++, CancellationToken.None, new FakeTime());
+
+        Assert.Equal(events.Count, seen);
+        Assert.Equal(json, ClaudeQuestionGenerator.ReadJson(message));
+        Assert.Equal(3, QuestionDraftSchema.Parse(ClaudeQuestionGenerator.ReadJson(message)).Questions.Count);
+
+        Assert.Null(reports[0].Fraction); // thinking: no way to know how long
+        Assert.StartsWith("Claude is reading the lecture", reports[0].Message);
+        Assert.Equal(["Writing question 1 of 3…", "Writing question 2 of 3…", "Writing question 3 of 3…"],
+            reports.Skip(1).Select(r => r.Message).Distinct());
+        var fractions = reports.Skip(1).Select(r => r.Fraction!.Value).ToList();
+        Assert.Equal(fractions.Order(), fractions);
+        Assert.Equal(1, fractions[^1]);
+    }
+
+    [Fact]
+    public async Task Streamed_server_side_fallback_block_is_skipped()
+    {
+        string[] events =
+        [
+            """{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-opus-5","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":1}}}""",
+            """{"type":"content_block_start","index":0,"content_block":{"type":"fallback","from":{"model":"claude-opus-5"},"to":{"model":"claude-opus-4-8"}}}""",
+            """{"type":"content_block_stop","index":0}""",
+            """{"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}""",
+            """{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"{\"questions\":[]}"}}""",
+            """{"type":"content_block_stop","index":1}""",
+            """{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":5}}""",
+            """{"type":"message_stop"}""",
+        ];
+        var message = await ClaudeQuestionGenerator.ReadStreamAsync(Events(events), 3, null, null, CancellationToken.None);
+        Assert.Equal("{\"questions\":[]}", ClaudeQuestionGenerator.ReadJson(message));
+    }
+
+    [Fact]
+    public async Task Streamed_refusal_keeps_its_stop_reason()
+    {
+        string[] events =
+        [
+            """{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-opus-5","content":[],"stop_reason":null,"stop_sequence":null,"usage":{"input_tokens":10,"output_tokens":1}}}""",
+            """{"type":"message_delta","delta":{"stop_reason":"refusal","stop_sequence":null},"usage":{"output_tokens":1}}""",
+            """{"type":"message_stop"}""",
+        ];
+        var message = await ClaudeQuestionGenerator.ReadStreamAsync(Events(events), 3, null, null, CancellationToken.None);
+        var ex = Assert.Throws<QuestionGenerationException>(() => ClaudeQuestionGenerator.ReadJson(message));
+        Assert.Equal(QuestionGenerationFailure.Refused, ex.Failure);
+    }
+
+    [Fact]
+    public void Stream_errors_are_classified()
+    {
+        Assert.Equal(QuestionGenerationFailure.ServiceUnavailable,
+            ClaudeQuestionGenerator.Translate(new Anthropic.Exceptions.AnthropicSseException("overloaded_error", null!), CancellationToken.None)!.Failure);
+        Assert.Equal(QuestionGenerationFailure.Network,
+            ClaudeQuestionGenerator.Translate(new IOException("connection reset"), CancellationToken.None)!.Failure);
+    }
+
+    private static async IAsyncEnumerable<BetaRawMessageStreamEvent> Events(IEnumerable<string> json)
+    {
+        foreach (var e in json)
+        {
+            await Task.Yield();
+            yield return JsonSerializer.Deserialize<BetaRawMessageStreamEvent>(e)!;
+        }
+    }
+
+    private sealed class SyncProgress(List<Core.QuestionGenerationProgress> reports) : IProgress<Core.QuestionGenerationProgress>
+    {
+        public void Report(Core.QuestionGenerationProgress value) => reports.Add(value);
+    }
+
     private static BetaMessage Message(string stopReason, string contentJson) =>
         BetaMessage.FromRawUnchecked(JsonSerializer.Deserialize<Dictionary<string, JsonElement>>($$$"""
             {"id":"msg_1","type":"message","role":"assistant","model":"claude-opus-5","content":{{{contentJson}}},
