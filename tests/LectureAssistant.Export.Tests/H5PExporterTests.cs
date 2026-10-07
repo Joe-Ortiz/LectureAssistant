@@ -132,7 +132,7 @@ public class H5PExporterTests
     {
         var project = TestData.Project();
         project.Quiz.ShowCorrectAnswers = false;
-        project.Quiz.AllowRetry = false;
+        project.Quiz.AttemptsAllowed = 1;
         var content = await ExportContentAsync(new H5PExporter(), project);
         var mc = content["interactiveVideo"]!["assets"]!["interactions"]![0]!["action"]!["params"]!;
 
@@ -144,6 +144,55 @@ public class H5PExporterTests
         Assert.False((bool)mc["behaviour"]!["enableRetry"]!);
         Assert.Equal("off", (string?)content["override"]!["showSolutionButton"]);
         Assert.Equal("off", (string?)content["override"]!["retryButton"]);
+    }
+
+    [Fact]
+    public async Task Retry_follows_each_questions_attempts()
+    {
+        var project = TestData.Project();
+        project.Quiz.AttemptsAllowed = 3;
+        project.Questions[1].AttemptsAllowed = 1;
+        project.Questions[2].AttemptsAllowed = AttemptRules.Unlimited;
+        var content = await ExportContentAsync(new H5PExporter(), project);
+        var retries = content["interactiveVideo"]!["assets"]!["interactions"]!.AsArray()
+            .Select(i => (bool)i!["action"]!["params"]!["behaviour"]!["enableRetry"]!).ToList();
+
+        Assert.Equal([true, false, true, true], retries);
+        // Mixed settings: no IV-wide override, so each question's own setting applies.
+        Assert.False(content["override"]!.AsObject().ContainsKey("retryButton"));
+    }
+
+    [Fact]
+    public async Task Retry_override_is_on_when_every_question_allows_retries()
+    {
+        var content = await ExportContentAsync(new H5PExporter(), TestData.Project());
+        Assert.Equal("on", (string?)content["override"]!["retryButton"]);
+    }
+
+    [Fact]
+    public void Warns_about_attempt_limits_and_reduced_credit_h5p_cannot_honor()
+    {
+        var project = TestData.Project();
+        Assert.Empty(H5PExporter.Warnings(project));
+
+        project.Quiz.AttemptsAllowed = 1;
+        project.Quiz.RetryScoring = RetryScoring.ReducedCredit;
+        Assert.Empty(H5PExporter.Warnings(project));
+
+        project.Quiz.AttemptsAllowed = 3;
+        project.Quiz.RetryScoring = RetryScoring.FullCredit;
+        var warning = Assert.Single(H5PExporter.Warnings(project));
+        Assert.Contains("can't limit the number of attempts", warning);
+        Assert.Contains("every question", warning);
+
+        project.Quiz.AttemptsAllowed = AttemptRules.Unlimited;
+        project.Questions[0].AttemptsAllowed = 2;
+        project.Questions[3].RetryScoring = RetryScoring.ReducedCredit;
+        var warnings = H5PExporter.Warnings(project);
+        Assert.Equal(2, warnings.Count);
+        Assert.Contains("the question at 0:30 ", warnings[0]);
+        Assert.Contains("can't reduce credit", warnings[1]);
+        Assert.Contains("the question at 5:00 ", warnings[1]);
     }
 
     [Fact]

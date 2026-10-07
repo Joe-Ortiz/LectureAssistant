@@ -25,6 +25,18 @@ public class ClaudeQuestionGeneratorTests
     }
 
     [Fact]
+    public void Request_schema_keeps_the_explanation_before_the_answer_fields()
+    {
+        // Claude writes properties in schema order, so the order must survive serialization into the request.
+        var p = ClaudeQuestionGenerator.BuildParameters(Request(), new ClaudeQuestionGeneratorOptions { ApiKey = "k" });
+        var names = Json(p.OutputConfig).GetProperty("format").GetProperty("schema").GetProperty("properties")
+            .GetProperty("questions").GetProperty("items").GetProperty("properties").EnumerateObject().Select(e => e.Name).ToList();
+        Assert.True(names.IndexOf("explanation") > names.IndexOf("prompt"));
+        Assert.True(names.IndexOf("explanation") < names.IndexOf("options"));
+        Assert.True(names.IndexOf("explanation") < names.IndexOf("correct_answer"));
+    }
+
+    [Fact]
     public void Default_fallback_uses_the_scalar_form_and_its_beta()
     {
         var p = ClaudeQuestionGenerator.BuildParameters(Request(), new ClaudeQuestionGeneratorOptions { ApiKey = "k" });

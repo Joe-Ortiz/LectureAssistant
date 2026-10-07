@@ -24,12 +24,18 @@ public sealed partial class QuestionViewModel : ObservableObject
     [ObservableProperty] public partial string AcceptedAnswersText { get; set; }
     [ObservableProperty] public partial string Explanation { get; set; }
     [ObservableProperty] public partial double Points { get; set; }
+    /// <summary>Index into <see cref="AttemptChoices.QuestionAttemptNames"/>; 0 = quiz default.</summary>
+    [ObservableProperty] public partial int AttemptsIndex { get; set; }
+    /// <summary>Index into <see cref="AttemptChoices.QuestionScoringNames"/>; 0 = quiz default.</summary>
+    [ObservableProperty] public partial int RetryScoringIndex { get; set; }
     [ObservableProperty] public partial string? SourceExcerpt { get; set; }
     [ObservableProperty] public partial string ProblemsText { get; set; } = "";
 
     public ObservableCollection<OptionViewModel> Options { get; } = [];
 
     public static IReadOnlyList<string> TypeNames { get; } = ["Multiple choice", "True / false", "Fill in the blank"];
+    public static IReadOnlyList<string> AttemptNames => AttemptChoices.QuestionAttemptNames;
+    public static IReadOnlyList<string> RetryScoringNames => AttemptChoices.QuestionScoringNames;
 
     public QuestionType Type => (QuestionType)TypeIndex;
     public bool IsMultipleChoice => Type == QuestionType.MultipleChoice;
@@ -37,6 +43,7 @@ public sealed partial class QuestionViewModel : ObservableObject
     public bool IsFillInTheBlank => Type == QuestionType.FillInTheBlank;
     public bool HasProblems => ProblemsText.Length > 0;
     public bool HasSourceExcerpt => !string.IsNullOrWhiteSpace(SourceExcerpt);
+    public bool OverridesWithReducedCredit => AttemptChoices.OverrideScoring(RetryScoringIndex) == RetryScoring.ReducedCredit;
 
     public QuestionViewModel(Question model, Action<QuestionViewModel> remove, Action<TimeSpan> seek, Action changed)
     {
@@ -53,6 +60,8 @@ public sealed partial class QuestionViewModel : ObservableObject
         AcceptedAnswersText = string.Join("; ", model.AcceptedAnswers);
         Explanation = model.Explanation ?? "";
         Points = model.Points;
+        AttemptsIndex = AttemptChoices.OverrideAttemptsIndex(model.AttemptsAllowed);
+        RetryScoringIndex = AttemptChoices.OverrideScoringIndex(model.RetryScoring);
         SourceExcerpt = model.SourceExcerpt;
         foreach (var option in model.Options) Options.Add(new OptionViewModel(option, RemoveOption, OnChildChanged));
         TypeIndex = (int)model.Type;
@@ -112,6 +121,8 @@ public sealed partial class QuestionViewModel : ObservableObject
             : [],
         Explanation = string.IsNullOrWhiteSpace(Explanation) ? null : Explanation.Trim(),
         Points = Math.Max(1, (int)Math.Round(double.IsNaN(Points) ? 1 : Points)),
+        AttemptsAllowed = AttemptChoices.OverrideAttempts(AttemptsIndex),
+        RetryScoring = AttemptChoices.OverrideScoring(RetryScoringIndex),
         SourceExcerpt = SourceExcerpt,
     };
 

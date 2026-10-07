@@ -38,16 +38,16 @@ internal static class LectureDataScript
             new LectureSettings(
                 project.Quiz.PassingScorePercent,
                 project.Quiz.PreventSkippingAhead,
-                project.Quiz.AllowRetry,
                 project.Quiz.ShowCorrectAnswers),
-            ExportValidation.OrderedQuestions(project).Select(ToData).ToList(),
+            ExportValidation.OrderedQuestions(project).Select(q => ToData(q, AttemptRules.For(q, project.Quiz))).ToList(),
             videoUrl,
             captionsUrl);
 
         return Prefix + JsonSerializer.Serialize(data, JsonOptions) + ";\n";
     }
 
-    private static QuestionData ToData(Question q) => new(
+    /// <param name="rules">Resolved here, so the player never has to combine quiz settings and question overrides.</param>
+    private static QuestionData ToData(Question q, AttemptRules rules) => new(
         q.Id,
         ExportValidation.Seconds(q.Timestamp),
         q.Type.ToString(),
@@ -60,7 +60,10 @@ internal static class LectureDataScript
             ? q.AcceptedAnswers.Where(a => !string.IsNullOrWhiteSpace(a)).Select(a => a.Trim()).ToList()
             : null,
         NullIfBlank(q.Explanation),
-        q.Points);
+        q.Points,
+        rules.AttemptsAllowed,
+        rules.Scoring.ToString(),
+        rules.RetryPenaltyPercent);
 
     private static string? NullIfBlank(string? s) => string.IsNullOrWhiteSpace(s) ? null : s.Trim();
 
@@ -76,11 +79,12 @@ internal static class LectureDataScript
     internal sealed record LectureSettings(
         double PassingScorePercent,
         bool PreventSkippingAhead,
-        bool AllowRetry,
         bool ShowCorrectAnswers);
 
     /// <param name="Time">Seconds from the start of the video.</param>
     /// <param name="Type">A <see cref="QuestionType"/> name.</param>
+    /// <param name="AttemptsAllowed">The question's effective limit; 0 = unlimited (<see cref="AttemptRules.Unlimited"/>).</param>
+    /// <param name="RetryScoring">The question's effective <see cref="Core.Models.RetryScoring"/> name.</param>
     internal sealed record QuestionData(
         string Id,
         double Time,
@@ -90,7 +94,10 @@ internal static class LectureDataScript
         bool? CorrectAnswer,
         IReadOnlyList<string>? AcceptedAnswers,
         string? Explanation,
-        int Points);
+        int Points,
+        int AttemptsAllowed,
+        string RetryScoring,
+        int RetryPenaltyPercent);
 
     internal sealed record OptionData(string Text, bool Correct, string? Feedback);
 }

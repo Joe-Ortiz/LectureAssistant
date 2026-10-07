@@ -1,9 +1,14 @@
+using LectureAssistant.Core.Hardware;
 using LectureAssistant.QuestionGeneration.Local;
 using Microsoft.Win32;
 
 namespace LectureAssistant.App.Services;
 
-/// <summary>Finds installed RAM and the largest dedicated GPU memory, to recommend a local model.</summary>
+/// <summary>
+/// Finds installed RAM and the GPU with the most dedicated memory, to recommend a local model and predict where it runs.
+/// Built-in graphics report only a small carve-out here (often 128-512 MB) and are otherwise picked out by name
+/// (see <see cref="GraphicsAdapters"/>).
+/// </summary>
 public static class HardwareProbe
 {
     // Display adapters device class.
@@ -48,6 +53,11 @@ public static class HardwareProbe
                     bestVram = vram;
                     bestName = adapter.GetValue("DriverDesc") as string;
                 }
+                else if (bestVram == 0 && GraphicsAdapters.Classify(bestName, 0) == GraphicsKind.None)
+                {
+                    // Some built-in graphics report no dedicated memory at all; keep the name so Settings can still say what's there.
+                    bestName = adapter.GetValue("DriverDesc") as string;
+                }
             }
         }
         catch (Exception ex) when (ex is System.Security.SecurityException or UnauthorizedAccessException or IOException)
@@ -55,6 +65,6 @@ public static class HardwareProbe
             // Unknown GPU: recommendations fall back to the model that runs on any PC.
         }
 
-        return (new HardwareProfile(ram, bestVram), bestName);
+        return (new HardwareProfile(ram, bestVram, bestName), bestName);
     }
 }

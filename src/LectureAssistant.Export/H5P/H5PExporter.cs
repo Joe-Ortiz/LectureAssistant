@@ -2,6 +2,7 @@ using System.IO.Compression;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using LectureAssistant.Core;
+using LectureAssistant.Core.Captions;
 using LectureAssistant.Core.Models;
 
 namespace LectureAssistant.Export.H5P;
@@ -30,6 +31,38 @@ public sealed class H5PExporter(H5PExportOptions? options = null) : ILectureExpo
         if (Options.ReferencePackagePath is { } path && !File.Exists(path))
             problems.Add($"The reference H5P package \"{path}\" was not found.");
         return problems;
+    }
+
+    /// <summary>
+    /// Quiz settings H5P can't honor, in plain language; empty when the export behaves as configured.
+    /// H5P questions only have retries on or off, so attempt limits above one and reduced credit are lost.
+    /// These don't block the export.
+    /// </summary>
+    public static IReadOnlyList<string> Warnings(LectureProject project)
+    {
+        ArgumentNullException.ThrowIfNull(project);
+        var questions = ExportValidation.OrderedQuestions(project);
+        var rules = questions.Select(q => AttemptRules.For(q, project.Quiz)).ToList();
+        var warnings = new List<string>();
+
+        var limited = Matching(r => !r.IsUnlimited && r.AttemptsAllowed > 1);
+        if (limited is not null)
+            warnings.Add($"H5P can't limit the number of attempts, so students will be able to retry {limited} as many times as they like.");
+
+        var reduced = Matching(r => r.AllowsRetries && r.Scoring == RetryScoring.ReducedCredit);
+        if (reduced is not null)
+            warnings.Add($"H5P can't reduce credit for retries, so a correct retry on {reduced} may earn full points.");
+
+        return warnings;
+
+        // "every question", "the question at 1:30" or "the questions at 1:30, 4:05"; null when none match.
+        string? Matching(Func<AttemptRules, bool> predicate)
+        {
+            var times = questions.Where((_, i) => predicate(rules[i])).Select(q => CaptionFormats.Clock(q.Timestamp)).ToList();
+            if (times.Count == 0) return null;
+            if (times.Count == questions.Count) return questions.Count == 1 ? "the question" : "every question";
+            return (times.Count == 1 ? "the question at " : "the questions at ") + string.Join(", ", times);
+        }
     }
 
     public async Task ExportAsync(LectureProject project, Stream output, CancellationToken cancellationToken)

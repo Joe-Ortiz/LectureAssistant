@@ -85,7 +85,7 @@ public class ScormExporterTests
         var settings = root.GetProperty("settings");
         Assert.Equal(70, settings.GetProperty("passingScorePercent").GetDouble());
         Assert.True(settings.GetProperty("preventSkippingAhead").GetBoolean());
-        Assert.True(settings.GetProperty("allowRetry").GetBoolean());
+        Assert.False(settings.TryGetProperty("allowRetry", out _));
         Assert.True(settings.GetProperty("showCorrectAnswers").GetBoolean());
 
         var questions = root.GetProperty("questions").EnumerateArray().ToList();
@@ -105,6 +105,43 @@ public class ScormExporterTests
         Assert.Equal(95.5, questions[1].GetProperty("time").GetDouble());
         Assert.False(questions[2].GetProperty("correctAnswer").GetBoolean());
         Assert.Equal(["joule", "J"], questions[3].GetProperty("acceptedAnswers").EnumerateArray().Select(a => a.GetString()));
+    }
+
+    [Fact]
+    public async Task Lecture_data_has_each_questions_effective_attempt_rules()
+    {
+        var project = TestData.Project();
+        project.Quiz.AttemptsAllowed = 3;
+        project.Quiz.RetryScoring = RetryScoring.ReducedCredit;
+        project.Quiz.RetryPenaltyPercent = 25;
+        project.Questions[1].AttemptsAllowed = 1;
+        project.Questions[2].RetryScoring = RetryScoring.FullCredit;
+        project.Questions[3].AttemptsAllowed = AttemptRules.Unlimited;
+        project.Questions[3].RetryScoring = RetryScoring.FirstAttemptOnly;
+
+        using var zip = TestData.OpenZip(await TestData.ExportAsync(new ScormExporter(), project));
+        using var json = ParseLectureData(TestData.ReadText(zip, "lecture-data.js"));
+        var questions = json.RootElement.GetProperty("questions").EnumerateArray()
+            .Select(q => (
+                q.GetProperty("attemptsAllowed").GetInt32(),
+                q.GetProperty("retryScoring").GetString(),
+                q.GetProperty("retryPenaltyPercent").GetInt32()))
+            .ToList();
+
+        Assert.Equal(
+            [(3, "ReducedCredit", 25), (1, "ReducedCredit", 25), (3, "FullCredit", 25), (0, "FirstAttemptOnly", 25)],
+            questions);
+    }
+
+    [Fact]
+    public async Task Player_credit_math_matches_core()
+    {
+        // player.js can't run in these tests, so check it still has the same rules as AttemptRules.CreditPercent.
+        using var zip = TestData.OpenZip(await TestData.ExportAsync(new ScormExporter(), TestData.Project()));
+        var player = TestData.ReadText(zip, "player.js");
+        Assert.Contains("if (attempt < 1 || (q.attemptsAllowed > 0 && attempt > q.attemptsAllowed)) return 0;", player);
+        Assert.Contains("if (q.retryScoring === 'FullCredit') return 100;", player);
+        Assert.Contains("return Math.max(0, 100 - q.retryPenaltyPercent * (attempt - 1));", player);
     }
 
     [Fact]
